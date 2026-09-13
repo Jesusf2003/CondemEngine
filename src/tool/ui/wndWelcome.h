@@ -1,0 +1,3 @@
+class SplashScreen : public Window
+{
+};

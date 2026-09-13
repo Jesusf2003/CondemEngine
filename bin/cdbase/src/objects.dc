@@ -1,0 +1,9 @@
+struct my_object {
+    int my_int;
+    float my_float;
+    string my_string;
+};
+
+typedef my_object my_object_t;
+
+entitydef my_object_t;

@@ -1,0 +1,20 @@
+game_definition(
+    TITLE "Game"
+    # default game dir
+    # at declare, require base game data to work
+    #BASEDIR "game"
+
+    # cannot be used with BASEDIR
+    GAMEDIR "game"
+)
+
+set(SAVE_DATA_FORMAT "json")
+
+add_dc_flags(
+    OUTPUT_DIR "../game.dat"
+    OPTIMIZATION 3
+)
+
+add_dc_source(
+    vars.dc
+)
