@@ -3,7 +3,10 @@
 //
 // Cada ventana del editor hereda de editor_window e implementa on_draw().
 // La clase se encarga de:
-//   - visibilidad: show/hide/toggle, minimizar/restaurar
+//   - visibilidad: show/hide/toggle, minimizar/maximizar/restaurar
+//   - barra de título al estilo de Windows: título a la izquierda y botones
+//     de minimizar, maximizar/restaurar y cerrar a la derecha (en lugar de la
+//     flecha y la X de ImGui). Doble clic en el título: maximizar/restaurar
 //   - opciones de la ventana: cerrar, minimizar, mover, redimensionar...
 //     se activan o desactivan por ventana con set_option()
 //   - desplazamiento: al mover o redimensionar, los bordes se acoplan a los
@@ -30,7 +33,7 @@ enum layout_region : int;
 enum
 {
     WND_CLOSABLE        = 1 << 0,   // botón de cerrar en la barra de título
-    WND_MINIMIZABLE     = 1 << 1,   // se puede minimizar a la barra de título
+    WND_MINIMIZABLE     = 1 << 1,   // botón de minimizar
     WND_MOVABLE         = 1 << 2,
     WND_RESIZABLE       = 1 << 3,
     WND_TITLEBAR        = 1 << 4,
@@ -38,8 +41,10 @@ enum
     WND_MIN_CONTENT     = 1 << 6,   // tamaño mínimo = lo que ocupa el contenido
     WND_MAX_CONTENT     = 1 << 7,   // tamaño máximo = lo que ocupa el contenido
     WND_COVER_LAYOUT    = 1 << 8,   // acoplada: cubre todo su hueco del layout (ignora el máximo)
+    WND_MAXIMIZABLE     = 1 << 9,   // botón de maximizar/restaurar
 
-    WND_DEFAULT         = WND_MINIMIZABLE | WND_MOVABLE | WND_RESIZABLE | WND_TITLEBAR | WND_SNAP | WND_COVER_LAYOUT
+    WND_DEFAULT         = WND_MINIMIZABLE | WND_MAXIMIZABLE | WND_MOVABLE | WND_RESIZABLE | WND_TITLEBAR
+                        | WND_SNAP | WND_COVER_LAYOUT
 };
 
 // Rectángulo en coordenadas de pantalla; min/max se indexan por eje (0 = x, 1 = y)
@@ -71,10 +76,21 @@ public:
     bool        is_open() const         { return open; }
 
     void        minimize();
-    void        restore();
     bool        is_minimized() const    { return minimized; }
-    // Flotante: se contrae a la barra de título.
+    // Flotante: queda solo su barra de título.
     // Acoplada en left/right/top/bottom: pasa a la barra de su borde del layout.
+    // El centro no se minimiza.
+
+    void        maximize();
+    void        toggle_maximize();
+    bool        is_maximized() const    { return maximized; }
+    bool        can_maximize() const;
+    // Ocupa toda el área de trabajo de la ventana principal, encima del
+    // layout. No se puede si su tamaño máximo es menor que el área.
+
+    void        restore();
+    // Como en Windows: si está minimizada vuelve a su estado anterior; si
+    // está maximizada vuelve a su tamaño normal.
 
     //------------------------------------------------------------------
     // Opciones
@@ -84,6 +100,7 @@ public:
 
     void        set_closable(bool enable)       { set_option(WND_CLOSABLE, enable); }
     void        set_minimizable(bool enable)    { set_option(WND_MINIMIZABLE, enable); }
+    void        set_maximizable(bool enable)    { set_option(WND_MAXIMIZABLE, enable); }
     void        set_movable(bool enable)        { set_option(WND_MOVABLE, enable); }
     void        set_resizable(bool enable)      { set_option(WND_RESIZABLE, enable); }
     void        set_titlebar(bool enable)       { set_option(WND_TITLEBAR, enable); }
@@ -159,6 +176,11 @@ private:
     void            draw(editor_layout* layout);
     ImGuiWindowFlags build_flags() const;
 
+    // barra de título al estilo de Windows
+    enum caption_icon { CAPTION_MINIMIZE, CAPTION_MAXIMIZE, CAPTION_RESTORE, CAPTION_CLOSE };
+    void            draw_caption();
+    bool            caption_button(const char* id, float x0, float x1, caption_icon icon, bool* hovered);
+
     // desplazamiento y acoplamiento
     static window_rect workspace();
     float           find_closest(int axis, float v, const window_rect& self, const window_rect& field, float snap) const;
@@ -169,13 +191,13 @@ private:
 
     std::string     name;           // identificador (comandos, editor.ini)
     std::string     title;          // texto de la barra de título
-    std::string     imgui_id;       // "title###name"
+    std::string     imgui_id;       // "###name": ImGui no dibuja el título, lo dibuja draw_caption()
     unsigned        options;
 
     bool            open;
     bool            minimized;
     bool            focused;
-    int             request_collapse;   // -1 nada, 0 restaurar, 1 minimizar
+    bool            maximized;
     bool            request_focus;
 
     ImVec2          default_pos;    // fracciones del área de trabajo
@@ -188,5 +210,7 @@ private:
     int             dock_region;    // layout_region en el frame actual (0 = flotante)
     ImVec2          float_size;     // último tamaño como flotante (0 = sin usar)
     ImVec2          request_size;   // tamaño a aplicar en el próximo frame (0 = nada)
+    ImVec2          request_pos;    // posición a aplicar en el próximo frame (FLT_MAX = nada)
+    ImVec2          restore_pos;    // posición como flotante antes de maximizar
     mutable bool    dock_resizing;  // el usuario arrastra el borde interior (lo marca snap_resize)
 };

@@ -43,6 +43,11 @@ editor_style::editor_style()
     scrollbar_bg        = Style_Color( 30,  30,  33);
     scrollbar_grab      = Style_Color( 72,  72,  78);
 
+    caption_hovered         = Style_Color(255, 255, 255, 0.10f);
+    caption_active          = Style_Color(255, 255, 255, 0.18f);
+    caption_close_hovered   = Style_Color(196,  43,  28);
+    caption_close_active    = Style_Color(148,  34,  24);
+
     bar_bg              = Style_Color( 30,  30,  33);
     drop_zone           = Style_Color(214, 140,  38, 0.10f);
     drop_preview        = Style_Color(214, 140,  38, 0.30f);
@@ -54,6 +59,7 @@ editor_style::editor_style()
     frame_rounding      = 2.0f;
     frame_padding       = ImVec2(6.0f, 4.0f);
     item_spacing        = ImVec2(8.0f, 5.0f);
+    caption_button_width = 34.0f;
     scrollbar_size      = 12.0f;
     scrollbar_rounding  = 2.0f;
     grab_rounding       = 2.0f;
@@ -89,6 +95,7 @@ void editor_style::apply(float dpi_scale)
     s.WindowPadding     = window_padding;
     s.WindowMinSize     = window_min_size;
     s.WindowTitleAlign  = ImVec2(0.0f, 0.5f);
+    s.WindowMenuButtonPosition = ImGuiDir_None;     // sin la flecha de ImGui: botones propios
     s.ChildRounding     = window_rounding;
     s.PopupRounding     = window_rounding;
     s.FrameRounding     = frame_rounding;

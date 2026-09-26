@@ -29,17 +29,18 @@ editor_window
 */
 editor_window::editor_window(const char* name, const char* title, unsigned options) :
     name(name), title(title), options(options),
-    open(true), minimized(false), focused(false),
-    request_collapse(-1), request_focus(false),
+    open(true), minimized(false), focused(false), maximized(false), request_focus(false),
     default_pos(0.05f, 0.05f), default_size(0.30f, 0.30f),
     min_size(ed_style.window_min_size), max_size(0, 0), content_size(0, 0),
     rect{ ImVec2(0, 0), ImVec2(0, 0) },
     dock_region(LAYOUT_FLOAT),
-    float_size(0, 0), request_size(0, 0), dock_resizing(false)
+    float_size(0, 0), request_size(0, 0), request_pos(FLT_MAX, FLT_MAX), restore_pos(0, 0),
+    dock_resizing(false)
 {
-    // "###" hace que el ID de ImGui (y editor.ini) dependa solo del nombre,
-    // así se puede cambiar el título sin perder la posición guardada
-    imgui_id = this->title + "###" + this->name;
+    // "###" + nombre: el ID de ImGui (y editor.ini) depende solo del nombre,
+    // así se puede cambiar el título sin perder la posición guardada. ImGui
+    // no dibuja título: lo dibuja draw_caption() junto a sus botones
+    imgui_id = "###" + this->name;
     windex.push_back(this);
 }
 
@@ -154,21 +155,91 @@ static layout_region Wnd_Region(const editor_window* w)
 ==================
 editor_window::minimize
 
-Flotante: se contrae a la barra de título (ImGui).
+Flotante: queda solo su barra de título.
 Acoplada a un lado: deja de dibujarse y el layout la muestra en la barra
-de su borde. El centro no se minimiza.
+de su borde. El centro no se minimiza. Si estaba maximizada, se restaura.
 ==================
 */
 void editor_window::minimize()
 {
-    if (!has_option(WND_MINIMIZABLE))
+    if (!has_option(WND_MINIMIZABLE) || minimized)
+        return;
+    if (Wnd_Region(this) == LAYOUT_CENTER)
         return;
 
-    const layout_region r = Wnd_Region(this);
-    if (r == LAYOUT_FLOAT)
-        request_collapse = 1;
-    else if (r != LAYOUT_CENTER)
-        minimized = true;
+    if (maximized)
+        toggle_maximize();
+    minimized = true;
+}
+
+/*
+==================
+editor_window::can_maximize
+
+Solo si tiene la opción y su tamaño máximo le deja ocupar el área de trabajo
+==================
+*/
+bool editor_window::can_maximize() const
+{
+    if (!has_option(WND_MAXIMIZABLE))
+        return false;
+
+    // con el máximo según el contenido, no se sabe hasta haberlo medido
+    if (has_option(WND_MAX_CONTENT) && (content_size.x <= 0 || content_size.y <= 0))
+        return false;
+
+    ImVec2 lo, hi;
+    if (Wnd_Region(this) != LAYOUT_FLOAT)
+        get_layout_limits(lo, hi);
+    else
+        get_size_limits(lo, hi);
+
+    const window_rect ws = workspace();
+    return hi.x >= ws.width() && hi.y >= ws.height();
+}
+
+/*
+==================
+editor_window::maximize
+==================
+*/
+void editor_window::maximize()
+{
+    if (!maximized)
+        toggle_maximize();
+}
+
+/*
+==================
+editor_window::toggle_maximize
+==================
+*/
+void editor_window::toggle_maximize()
+{
+    const bool floating = (Wnd_Region(this) == LAYOUT_FLOAT);
+
+    if (maximized)
+    {
+        // vuelve a su tamaño normal: acoplada, a su hueco del layout;
+        // flotante, a la posición y tamaño que tenía
+        maximized = false;
+        if (floating)
+        {
+            request_pos = restore_pos;
+            if (float_size.x > 0 && float_size.y > 0)
+                request_size = float_size;
+        }
+        return;
+    }
+
+    if (!can_maximize())
+        return;
+
+    minimized = false;
+    if (floating)
+        restore_pos = rect.min;
+    maximized = true;
+    request_focus = true;
 }
 
 /*
@@ -178,9 +249,14 @@ editor_window::restore
 */
 void editor_window::restore()
 {
-    if (Wnd_Region(this) != LAYOUT_FLOAT)
+    if (minimized)
+    {
         minimized = false;
-    request_collapse = 0;
+        if (Wnd_Region(this) == LAYOUT_FLOAT && float_size.x > 0 && float_size.y > 0)
+            request_size = float_size;
+    }
+    else if (maximized)
+        toggle_maximize();
 }
 
 /*
@@ -195,9 +271,11 @@ void editor_window::set_option(unsigned option, bool enable)
     else
         options &= ~option;
 
-    // sin la opción de minimizar no puede quedarse minimizada
+    // sin la opción ya no puede quedarse en ese estado
     if ((option & WND_MINIMIZABLE) && !enable && minimized)
         restore();
+    if ((option & WND_MAXIMIZABLE) && !enable && maximized)
+        toggle_maximize();
 }
 
 /*
@@ -281,8 +359,9 @@ ImGuiWindowFlags editor_window::build_flags() const
 {
     ImGuiWindowFlags flags = window_flags();
 
-    if (!has_option(WND_MINIMIZABLE))
-        flags |= ImGuiWindowFlags_NoCollapse;
+    // sin la flecha ni el doble clic de ImGui: minimizar y maximizar son
+    // de draw_caption()
+    flags |= ImGuiWindowFlags_NoCollapse;
     if (!has_option(WND_MOVABLE))
         flags |= ImGuiWindowFlags_NoMove;
     if (!has_option(WND_RESIZABLE))
@@ -451,46 +530,6 @@ void editor_window::snap_resize(ImGuiSizeCallbackData* data) const
     else
         return;     // no es un redimensionado con el ratón
 
-// acoplada en el layout: solo se mueve el borde que da al centro
-    if (dock_region != LAYOUT_FLOAT)
-    {
-        bool allowed[2][2] = {};
-        switch (dock_region)
-        {
-        case LAYOUT_LEFT:   allowed[0][1] = true; break;
-        case LAYOUT_RIGHT:  allowed[0][0] = true; break;
-        case LAYOUT_TOP:    allowed[1][1] = true; break;
-        case LAYOUT_BOTTOM: allowed[1][0] = true; break;
-        default: break;
-        }
-        for (int axis = 0; axis < 2; axis++)
-        {
-            for (int side = 0; side < 2; side++)
-                edge[axis][side] = edge[axis][side] && allowed[axis][side];
-            if (!edge[axis][0] && !edge[axis][1])
-                data->DesiredSize[axis] = data->CurrentSize[axis];
-            else
-                dock_resizing = true;
-        }
-    }
-
-    const window_rect field = workspace();
-    const float snap = ed_style.scaled(ed_style.snap_resize);
-    const bool free = !has_option(WND_SNAP) || g.IO.KeyShift || dock_region != LAYOUT_FLOAT;
-    // flotante con viewports: puede crecer fuera de la ventana principal
-    const bool outside_ok = dock_region == LAYOUT_FLOAT && Wnd_CanLeaveMain();
-
-// límites de tamaño. Acoplada: en el eje de su región manda el layout, que
-// además impide invadir las otras regiones ocupadas
-    ImVec2 lo, hi;
-    get_size_limits(lo, hi);
-    if (dock_region != LAYOUT_FLOAT)
-    {
-        const int axis = (dock_region == LAYOUT_LEFT || dock_region == LAYOUT_RIGHT) ? 0 : 1;
-        if (const editor_layout* l = editor_layout::active())
-            l->extent_limits(this, lo[axis], hi[axis]);
-    }
-
 // rectángulo propuesto: el borde opuesto al que se arrastra queda fijo
     window_rect r;
     for (int axis = 0; axis < 2; axis++)
@@ -501,6 +540,46 @@ void editor_window::snap_resize(ImGuiSizeCallbackData* data) const
             r.min[axis] = data->Pos[axis];
         r.max[axis] = r.min[axis] + data->DesiredSize[axis];
     }
+
+// acoplada: el layout dice qué bordes se mueven (el que da al centro y los
+// que están entre dos paneles) y hasta dónde, sin invadir otras regiones
+    if (dock_region != LAYOUT_FLOAT)
+    {
+        const editor_layout* l = editor_layout::active();
+        bool allowed[2][2] = {};
+        if (l)
+            l->resize_edges(this, allowed);
+
+        for (int axis = 0; axis < 2; axis++)
+        {
+            for (int side = 0; side < 2; side++)
+                edge[axis][side] = edge[axis][side] && allowed[axis][side];
+            if (!edge[axis][0] && !edge[axis][1])
+            {
+                // este eje no se puede redimensionar: se queda como estaba
+                r.min[axis] = data->Pos[axis];
+                r.max[axis] = data->Pos[axis] + data->CurrentSize[axis];
+            }
+            else
+                dock_resizing = true;
+        }
+
+        if (l)
+            l->constrain_resize(this, edge, r);
+        for (int axis = 0; axis < 2; axis++)
+            data->DesiredSize[axis] = r.max[axis] - r.min[axis];
+        return;
+    }
+
+// flotante: acoplamiento a bordes y límites de tamaño
+    const window_rect field = workspace();
+    const float snap = ed_style.scaled(ed_style.snap_resize);
+    const bool free = !has_option(WND_SNAP) || g.IO.KeyShift;
+    // con viewports puede crecer fuera de la ventana principal
+    const bool outside_ok = Wnd_CanLeaveMain();
+
+    ImVec2 lo, hi;
+    get_size_limits(lo, hi);
 
     for (int axis = 0; axis < 2; axis++)
     {
@@ -557,13 +636,18 @@ void editor_window::draw(editor_layout* layout)
         return;
     }
 
+    const bool float_minimized = !docked && minimized;     // solo la barra de título
+    const bool max_now = maximized && !minimized;
+    const float title_height = ImGui::GetFrameHeight();     // igual que ImGuiWindow::TitleBarHeight
+
     ImGuiWindowFlags flags = build_flags();
 
     // límites de tamaño. Las acopladas miden exactamente lo que les da el
-    // layout (que ya respeta sus límites), así nunca cubren otra región
+    // layout (que ya respeta sus límites), así nunca cubren otra región.
+    // Maximizada o minimizada, el tamaño lo decide su estado
     ImVec2 size_min, size_max;
     get_size_limits(size_min, size_max);
-    if (docked)
+    if (docked || max_now || float_minimized)
     {
         size_min = ImVec2(0, 0);
         size_max = ImVec2(FLT_MAX, FLT_MAX);
@@ -571,7 +655,16 @@ void editor_window::draw(editor_layout* layout)
     ImGui::SetNextWindowSizeConstraints(size_min, size_max, size_callback, this);
     dock_resizing = false;
 
-    if (docked)
+    if (max_now)
+    {
+// maximizada: toda el área de trabajo de la ventana principal, encima del
+// layout. No se mueve ni se redimensiona hasta que se restaura
+        ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+        ImGui::SetNextWindowPos(field.min, ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(field.width(), field.height()), ImGuiCond_Always);
+        flags |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+    }
+    else if (docked)
     {
 // acoplada: el layout decide posición y tamaño. No se trae al frente al
 // hacer clic para que las ventanas flotantes queden siempre encima.
@@ -581,8 +674,6 @@ void editor_window::draw(editor_layout* layout)
         ImGui::SetNextWindowPos(docked->min, ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(docked->width(), docked->height()), ImGuiCond_Always);
         flags |= ImGuiWindowFlags_NoBringToFrontOnFocus;
-        if (dock_region == LAYOUT_CENTER)
-            flags |= ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
     }
     else
     {
@@ -590,59 +681,66 @@ void editor_window::draw(editor_layout* layout)
         const ImVec2 ws(field.width(), field.height());
         ImGui::SetNextWindowPos(ImVec2(field.min.x + default_pos.x * ws.x, field.min.y + default_pos.y * ws.y), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(default_size.x * ws.x, default_size.y * ws.y), ImGuiCond_FirstUseEver);
-    }
 
 // mover: ImGui ya aplicó el movimiento del ratón en NewFrame(), así que se
 // corrige la posición antes de Begin() para que no haya un frame de retraso
-    ImGuiWindow* w = docked ? nullptr : ImGui::FindWindowByName(imgui_id.c_str());
-    if (w)
-    {
-        const bool moving = g.MovingWindow && g.MovingWindow->RootWindow == w;
-        const bool other_active = g.ActiveId != 0 && !moving;   // p. ej. redimensionando
+        if (ImGuiWindow* w = ImGui::FindWindowByName(imgui_id.c_str()))
+        {
+            const bool moving = g.MovingWindow && g.MovingWindow->RootWindow == w;
+            const bool other_active = g.ActiveId != 0 && !moving;   // p. ej. redimensionando
 
-        window_rect r = { w->Pos, ImVec2(w->Pos.x + w->Size.x, w->Pos.y + w->Size.y) };
-        window_rect target = r;
+            window_rect r = { w->Pos, ImVec2(w->Pos.x + w->Size.x, w->Pos.y + w->Size.y) };
+            window_rect target = r;
 
-        if (moving && has_option(WND_SNAP) && !g.IO.KeyShift)
-            snap_move(target, field);
-        if (!other_active)
-            if (!Wnd_CanLeaveMain())
+            if (moving && has_option(WND_SNAP) && !g.IO.KeyShift)
+                snap_move(target, field);
+            if (!other_active && !Wnd_CanLeaveMain())
                 clamp_to_field(target, field);
 
-        if (target.min.x != r.min.x || target.min.y != r.min.y)
-            ImGui::SetNextWindowPos(target.min, ImGuiCond_Always);
-        if (!w->Collapsed && (target.width() != r.width() || target.height() != r.height()))
-            ImGui::SetNextWindowSize(ImVec2(target.width(), target.height()), ImGuiCond_Always);
+            if (target.min.x != r.min.x || target.min.y != r.min.y)
+                ImGui::SetNextWindowPos(target.min, ImGuiCond_Always);
+            if (!float_minimized && (target.width() != r.width() || target.height() != r.height()))
+                ImGui::SetNextWindowSize(ImVec2(target.width(), target.height()), ImGuiCond_Always);
+        }
+
+        // posición y tamaño pedidos (al sacarla del layout o al restaurarla)
+        if (request_pos.x != FLT_MAX)
+        {
+            ImGui::SetNextWindowPos(request_pos, ImGuiCond_Always);
+            request_pos = ImVec2(FLT_MAX, FLT_MAX);
+        }
+        if (float_minimized)
+        {
+            // minimizada: solo la barra de título, con el ancho que tenía
+            const float width = float_size.x > 0 ? float_size.x : default_size.x * ws.x;
+            ImGui::SetNextWindowSize(ImVec2(width, title_height), ImGuiCond_Always);
+            flags |= ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+        }
+        else if (request_size.x > 0 && request_size.y > 0)
+        {
+            ImGui::SetNextWindowSize(request_size, ImGuiCond_Always);
+            request_size = ImVec2(0, 0);
+        }
     }
 
-    // tamaño pedido al sacarla del layout
-    if (!docked && request_size.x > 0 && request_size.y > 0)
-    {
-        ImGui::SetNextWindowSize(request_size, ImGuiCond_Always);
-        request_size = ImVec2(0, 0);
-    }
-
-    if (request_collapse >= 0)
-    {
-        ImGui::SetNextWindowCollapsed(request_collapse == 1, ImGuiCond_Always);
-        request_collapse = -1;
-    }
     if (request_focus)
     {
         ImGui::SetNextWindowFocus();
         request_focus = false;
     }
 
-    const bool was_open = open;
     // el tamaño mínimo global del estilo haría que una acoplada en un hueco
-    // pequeño se saliera de él y tapara la región vecina
-    if (docked)
+    // pequeño se saliera de él y tapara la región vecina, y no dejaría que
+    // una minimizada quede en solo la barra de título
+    const bool no_min_size = docked || float_minimized;
+    if (no_min_size)
         ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
-    const bool visible = ImGui::Begin(imgui_id.c_str(), has_option(WND_CLOSABLE) ? &open : nullptr, flags);
-    if (docked)
+    const bool visible = ImGui::Begin(imgui_id.c_str(), nullptr, flags);
+    if (no_min_size)
         ImGui::PopStyleVar();
 
     // tamaño que necesita el contenido (mismo cálculo que el auto-ajuste de ImGui)
+    if (!minimized)
     {
         const ImGuiWindow* iw = ImGui::GetCurrentWindow();
         if (iw->ContentSizeIdeal.x > 0 && iw->ContentSizeIdeal.y > 0)
@@ -651,28 +749,14 @@ void editor_window::draw(editor_layout* layout)
                 iw->ContentSizeIdeal.y + iw->WindowPadding.y * 2.0f + iw->DecoOuterSizeY1 + iw->DecoOuterSizeY2 - iw->ScrollbarSizes.y);
     }
 
-    const bool collapsed = ImGui::IsWindowCollapsed();
-    if (docked && dock_region != LAYOUT_CENTER)
-    {
-        // flecha de la barra de título o doble clic: en lugar de contraerse,
-        // pasa a la barra del layout (y se deja sin contraer para cuando vuelva)
-        if (collapsed)
-        {
-            minimized = true;
-            request_collapse = 0;
-        }
-    }
-    else
-        minimized = collapsed;
-
     const ImVec2 pos = ImGui::GetWindowPos();
     const ImVec2 size = ImGui::GetWindowSize();
     rect = { pos, ImVec2(pos.x + size.x, pos.y + size.y) };
-    if (!docked && !collapsed)
+    if (!docked && !minimized && !maximized)
         float_size = size;
 
     // borde interior arrastrado: el layout ajusta el tamaño de la región
-    if (docked && dock_resizing)
+    if (docked && dock_resizing && !max_now)
         layout->resized(this, rect);
 
     const bool now_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
@@ -680,14 +764,187 @@ void editor_window::draw(editor_layout* layout)
         on_focus();
     focused = now_focused;
 
-    if (visible)
+    draw_caption();
+
+    if (visible && !float_minimized)
         on_draw();
 
     ImGui::End();
+}
 
-    // cerrada con el botón de la barra de título
-    if (was_open && !open)
-        on_hide();
+/*
+========================================================================
+
+    BARRA DE TÍTULO
+
+    Al estilo de las ventanas de Windows: el título a la izquierda y los
+    botones de minimizar, maximizar/restaurar y cerrar a la derecha, que
+    ocupan todo el alto de la barra. Cada botón aparece solo si la ventana
+    tiene la opción (WND_MINIMIZABLE, WND_MAXIMIZABLE, WND_CLOSABLE).
+
+========================================================================
+*/
+
+/*
+==================
+editor_window::caption_button
+
+Botón de la barra de título entre x0 y x1. Devuelve true al hacer clic
+==================
+*/
+bool editor_window::caption_button(const char* id, float x0, float x1, caption_icon icon, bool* hovered_out)
+{
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    const ImRect bar = win->TitleBarRect();
+    const ImRect bb(ImVec2(x0, bar.Min.y), ImVec2(x1, bar.Max.y));
+    const ImGuiID bid = win->GetID(id);
+
+    ImGui::ItemAdd(bb, bid, nullptr, ImGuiItemFlags_NoNav);
+    bool hovered, held;
+    const bool pressed = ImGui::ButtonBehavior(bb, bid, &hovered, &held);
+    if (hovered)
+        *hovered_out = true;
+
+// fondo: gris claro al pasar por encima; rojo en cerrar, como en Windows
+    ImDrawList* dl = win->DrawList;
+    if (hovered || held)
+    {
+        ImVec4 col;
+        if (icon == CAPTION_CLOSE)
+            col = held ? ed_style.caption_close_active : ed_style.caption_close_hovered;
+        else
+            col = held ? ed_style.caption_active : ed_style.caption_hovered;
+
+        // el botón de la esquina respeta el redondeo de la ventana
+        const bool corner = (x1 >= bar.Max.x - 0.5f);
+        dl->AddRectFilled(bb.Min, bb.Max, ImGui::ColorConvertFloat4ToU32(col),
+            corner ? win->WindowRounding : 0.0f, corner ? ImDrawFlags_RoundCornersTopRight : ImDrawFlags_None);
+    }
+
+// icono
+    ImU32 icon_col;
+    if (icon == CAPTION_CLOSE && (hovered || held))
+        icon_col = IM_COL32(255, 255, 255, 255);
+    else
+        icon_col = ImGui::GetColorU32(focused ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+
+    const ImVec2 c(std::floor((bb.Min.x + bb.Max.x) * 0.5f) + 0.5f, std::floor((bb.Min.y + bb.Max.y) * 0.5f) + 0.5f);
+    const float s = std::floor(bb.GetHeight() * 0.22f);                 // medio lado del icono
+    const float th = std::max(1.0f, std::floor(ed_style.scaled(1.0f)));
+
+    switch (icon)
+    {
+    case CAPTION_MINIMIZE:
+        dl->AddLine(ImVec2(c.x - s, c.y), ImVec2(c.x + s + 1.0f, c.y), icon_col, th);
+        break;
+
+    case CAPTION_MAXIMIZE:
+        dl->AddRect(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s), icon_col, 0.0f, 0, th);
+        break;
+
+    case CAPTION_RESTORE:
+    {
+        // dos cuadrados superpuestos: el de delante abajo a la izquierda
+        const float d = std::floor(s * 0.45f);
+        dl->AddRect(ImVec2(c.x - s, c.y - s + d), ImVec2(c.x + s - d, c.y + s), icon_col, 0.0f, 0, th);
+        dl->AddLine(ImVec2(c.x - s + d, c.y - s + d), ImVec2(c.x - s + d, c.y - s), icon_col, th);
+        dl->AddLine(ImVec2(c.x - s + d, c.y - s), ImVec2(c.x + s, c.y - s), icon_col, th);
+        dl->AddLine(ImVec2(c.x + s, c.y - s), ImVec2(c.x + s, c.y + s - d), icon_col, th);
+        dl->AddLine(ImVec2(c.x + s, c.y + s - d), ImVec2(c.x + s - d, c.y + s - d), icon_col, th);
+        break;
+    }
+
+    case CAPTION_CLOSE:
+        dl->AddLine(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s + 0.5f, c.y + s + 0.5f), icon_col, th);
+        dl->AddLine(ImVec2(c.x - s, c.y + s), ImVec2(c.x + s + 0.5f, c.y - s - 0.5f), icon_col, th);
+        break;
+    }
+
+    return pressed;
+}
+
+/*
+==================
+editor_window::draw_caption
+
+Título y botones. Se llama entre Begin() y End()
+==================
+*/
+void editor_window::draw_caption()
+{
+    if (!has_option(WND_TITLEBAR))
+        return;
+
+    ImGuiContext& g = *GImGui;
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    const ImRect bar = win->TitleBarRect();
+    const float bw = std::floor(ed_style.scaled(ed_style.caption_button_width));
+
+    const bool show_close = has_option(WND_CLOSABLE);
+    const bool show_max = can_maximize();
+    const bool show_min = has_option(WND_MINIMIZABLE) && dock_region != LAYOUT_CENTER;
+
+    // la barra de título está fuera del recorte del contenido; los botones
+    // van en la capa de menú, como los de ImGui, para no entrar en la navegación
+    ImGui::PushClipRect(bar.Min, bar.Max, false);
+    const ImGuiNavLayer layer = win->DC.NavLayerCurrent;
+    win->DC.NavLayerCurrent = ImGuiNavLayer_Menu;
+
+    bool hovered = false;
+    bool do_close = false, do_max = false, do_min = false;
+    float x = bar.Max.x;
+    if (show_close)
+    {
+        do_close = caption_button("#CLOSE", x - bw, x, CAPTION_CLOSE, &hovered);
+        x -= bw;
+    }
+    if (show_max)
+    {
+        do_max = caption_button("#MAXIMIZE", x - bw, x, maximized ? CAPTION_RESTORE : CAPTION_MAXIMIZE, &hovered);
+        x -= bw;
+    }
+    if (show_min)
+    {
+        do_min = caption_button("#MINIMIZE", x - bw, x, minimized ? CAPTION_RESTORE : CAPTION_MINIMIZE, &hovered);
+        x -= bw;
+    }
+
+// título, recortado con "..." antes de los botones
+    const float pad = g.Style.FramePadding.x;
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(focused ? ImGuiCol_Text : ImGuiCol_TextDisabled));
+    const ImVec2 text_size = ImGui::CalcTextSize(this->title.c_str());
+    const ImVec2 text_min(bar.Min.x + pad, bar.Min.y + (bar.GetHeight() - text_size.y) * 0.5f);
+    const ImVec2 text_max(x - pad, bar.Max.y);
+    if (text_max.x > text_min.x)
+        ImGui::RenderTextEllipsis(win->DrawList, text_min, text_max, text_max.x, this->title.c_str(), nullptr, &text_size);
+    ImGui::PopStyleColor();
+
+    win->DC.NavLayerCurrent = layer;
+    ImGui::PopClipRect();
+
+// doble clic en la barra de título (fuera de los botones): maximizar/restaurar
+    const bool dbl = !hovered && g.HoveredWindow == win && g.IO.MouseClickedCount[0] == 2
+        && ImGui::IsMouseHoveringRect(bar.Min, ImVec2(x, bar.Max.y), false);
+
+// las acciones al final, cuando ya no se usa la ventana de ImGui
+    if (do_close)
+        hide();
+    else if (do_min)
+    {
+        if (minimized)
+            restore();
+        else
+            minimize();
+    }
+    else if (do_max)
+        toggle_maximize();
+    else if (dbl)
+    {
+        if (minimized)
+            restore();
+        else if (show_max)
+            toggle_maximize();
+    }
 }
 
 /*
@@ -771,12 +1028,19 @@ Wnd_List_f
 */
 static void Wnd_List_f(void)
 {
-    const editor_layout* layout = editor_layout::active();
+    editor_layout* layout = editor_layout::active();
     for (const editor_window* w : editor_window::windex)
-        Con_Printf("  %-12s %-8s %s%s\n", w->get_name(),
-            editor_layout::region_name(layout ? layout->region_of(w) : LAYOUT_FLOAT),
+    {
+        const editor_layout* owner = layout ? layout->owner_of(w) : nullptr;
+        char where[64];
+        if (owner && owner != layout)
+            snprintf(where, sizeof(where), "center.%s", editor_layout::region_name(owner->region_of(w)));
+        else
+            snprintf(where, sizeof(where), "%s", editor_layout::region_name(owner ? owner->region_of(w) : LAYOUT_FLOAT));
+        Con_Printf("  %-12s %-14s %s%s\n", w->get_name(), where,
             w->is_open() ? "abierta" : "oculta",
             w->is_minimized() ? ", minimizada" : "");
+    }
     Con_Printf("%i window(s)\n", (int)editor_window::windex.size());
 }
 

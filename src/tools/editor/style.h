@@ -47,6 +47,11 @@ public:
     ImVec4  scrollbar_bg;
     ImVec4  scrollbar_grab;
 
+    ImVec4  caption_hovered;        // botones de la barra de título (minimizar, maximizar)
+    ImVec4  caption_active;
+    ImVec4  caption_close_hovered;  // botón de cerrar, rojo como en Windows
+    ImVec4  caption_close_active;
+
     ImVec4  bar_bg;                 // barra de ventanas minimizadas del layout
     ImVec4  drop_zone;              // zonas donde se puede soltar una ventana
     ImVec4  drop_preview;           // vista previa de dónde quedará la ventana
@@ -61,6 +66,7 @@ public:
     float   frame_rounding;
     ImVec2  frame_padding;
     ImVec2  item_spacing;
+    float   caption_button_width;   // ancho de los botones de la barra de título
     float   scrollbar_size;
     float   scrollbar_rounding;
     float   grab_rounding;
