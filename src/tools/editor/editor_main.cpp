@@ -14,6 +14,7 @@
 #include "sys/sys_vid.h"
 
 #include "tools/editor/layout.h"
+#include "tools/editor/menubar.h"
 #include "tools/editor/style.h"
 #include "tools/editor/window.h"
 #include "tools/editor/wnd_console.h"
@@ -420,10 +421,12 @@ int Editor_Main(void)
     console_window  console;
 
 // layout de la pantalla principal (editor.ini puede sobrescribirlo)
+    // cada ventana va a su región por defecto (consola abajo, info a la izquierda)
     editor_layout   main_layout("main");
-    main_layout.dock(&console, LAYOUT_BOTTOM);
-    main_layout.dock(&info, LAYOUT_LEFT);
+    main_layout.dock_defaults();
     editor_layout::set_active(&main_layout);
+
+    editor_menubar  menubar;
 
     Con_Printf("Editor iniciado. Escribe \"cmdlist\", \"cvarlist\" o \"windowlist\" en la consola.\n");
 
@@ -456,6 +459,7 @@ int Editor_Main(void)
         VID_ImGui_NewFrame();
         ImGui::NewFrame();
 
+        menubar.draw(editor_layout::active());   // antes: reduce el área de trabajo
         editor_window::draw_all();
 
         ImGui::Render();

@@ -258,6 +258,24 @@ void editor_layout::undock(editor_window* window)
 
 /*
 ==================
+editor_layout::dock_default / dock_defaults
+==================
+*/
+void editor_layout::dock_default(editor_window* window)
+{
+    const layout_region r = window->get_default_dock();
+    if (r != LAYOUT_FLOAT && !root()->owner_of(window))
+        root()->dock(window, r);
+}
+
+void editor_layout::dock_defaults()
+{
+    for (editor_window* w : editor_window::windex)
+        dock_default(w);
+}
+
+/*
+==================
 editor_layout::region_of
 ==================
 */

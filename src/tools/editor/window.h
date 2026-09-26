@@ -8,7 +8,9 @@
 //     de minimizar, maximizar/restaurar y cerrar a la derecha (en lugar de la
 //     flecha y la X de ImGui). Doble clic en el título: maximizar/restaurar
 //   - opciones de la ventana: cerrar, minimizar, mover, redimensionar...
-//     se activan o desactivan por ventana con set_option()
+//     se activan o desactivan por ventana con set_option(). Solo limitan a la
+//     ventana acoplada: flotante funciona siempre como una ventana normal
+//     (se mueve, se redimensiona, se minimiza, se maximiza y se cierra)
 //   - desplazamiento: al mover o redimensionar, los bordes se acoplan a los
 //     bordes de las otras ventanas y del área de trabajo (TryDocking de QE3).
 //     Con viewports (ImGuiConfigFlags_ViewportsEnable) una ventana flotante
@@ -110,6 +112,11 @@ public:
     //------------------------------------------------------------------
     // Posición
 
+    void        set_default_dock(layout_region region);
+    layout_region get_default_dock() const;
+    // Región del layout donde va la ventana por defecto (LAYOUT_FLOAT = ninguna):
+    // al iniciar el editor y al volver a mostrarla si no está acoplada.
+
     void        set_default_rect(float x, float y, float w, float h);
     // Posición y tamaño iniciales, en fracciones (0..1) del área de trabajo.
     // Solo se usa si editor.ini no tiene guardada la ventana.
@@ -175,6 +182,9 @@ protected:
 private:
     void            draw(editor_layout* layout);
     ImGuiWindowFlags build_flags() const;
+    bool            is_floating() const;
+    bool            allows(unsigned option) const;
+    // Flotante: siempre; acoplada: según sus opciones.
 
     // barra de título al estilo de Windows
     enum caption_icon { CAPTION_MINIMIZE, CAPTION_MAXIMIZE, CAPTION_RESTORE, CAPTION_CLOSE };
@@ -208,6 +218,7 @@ private:
 
     window_rect     rect;           // posición en pantalla del último frame
     int             dock_region;    // layout_region en el frame actual (0 = flotante)
+    int             default_dock;   // layout_region por defecto (0 = ninguna)
     ImVec2          float_size;     // último tamaño como flotante (0 = sin usar)
     ImVec2          request_size;   // tamaño a aplicar en el próximo frame (0 = nada)
     ImVec2          request_pos;    // posición a aplicar en el próximo frame (FLT_MAX = nada)

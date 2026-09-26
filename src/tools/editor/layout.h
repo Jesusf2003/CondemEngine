@@ -97,6 +97,13 @@ public:
     void            undock(editor_window* window);
     // La saca de este layout o del de su centro.
 
+    void            dock_default(editor_window* window);
+    // Si la ventana no está acoplada, la acopla en su región por defecto
+    // (editor_window::set_default_dock).
+
+    void            dock_defaults();
+    // dock_default() de todas las ventanas.
+
     layout_region   region_of(const editor_window* window) const;
     // Región dentro del layout que la contiene (este o el del centro).
 

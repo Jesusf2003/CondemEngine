@@ -100,6 +100,8 @@ set(EDITOR_SRC
     src/tools/editor/editor.h
     src/tools/editor/layout.cpp
     src/tools/editor/layout.h
+    src/tools/editor/menubar.cpp
+    src/tools/editor/menubar.h
     src/tools/editor/style.cpp
     src/tools/editor/style.h
     src/tools/editor/window.cpp

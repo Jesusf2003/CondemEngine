@@ -3,6 +3,8 @@
 
 #include "tools/editor/wnd_console.h"
 
+#include "tools/editor/layout.h"
+
 #include "core/cmd.h"
 #include "core/cvar.h"
 #include "engine/console.h"
@@ -13,12 +15,13 @@ console_window
 ==================
 */
 console_window::console_window() :
-    editor_window("console", "Consola"),
+    editor_window("console", "Consola", WND_DEFAULT | WND_CLOSABLE),
     scroll_to_end(true), reclaim_focus(false)
 {
     input[0] = 0;
 
-    // acoplada abajo, a todo el ancho del área de trabajo
+    // por defecto acoplada abajo, a todo el ancho del área de trabajo
+    set_default_dock(LAYOUT_BOTTOM);
     set_default_rect(0.0f, 0.60f, 1.0f, 0.40f);
     set_min_size(240.0f, 120.0f);
 }

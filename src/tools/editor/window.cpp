@@ -33,7 +33,7 @@ editor_window::editor_window(const char* name, const char* title, unsigned optio
     default_pos(0.05f, 0.05f), default_size(0.30f, 0.30f),
     min_size(ed_style.window_min_size), max_size(0, 0), content_size(0, 0),
     rect{ ImVec2(0, 0), ImVec2(0, 0) },
-    dock_region(LAYOUT_FLOAT),
+    dock_region(LAYOUT_FLOAT), default_dock(LAYOUT_FLOAT),
     float_size(0, 0), request_size(0, 0), request_pos(FLT_MAX, FLT_MAX), restore_pos(0, 0),
     dock_resizing(false)
 {
@@ -162,7 +162,7 @@ de su borde. El centro no se minimiza. Si estaba maximizada, se restaura.
 */
 void editor_window::minimize()
 {
-    if (!has_option(WND_MINIMIZABLE) || minimized)
+    if (!allows(WND_MINIMIZABLE) || minimized)
         return;
     if (Wnd_Region(this) == LAYOUT_CENTER)
         return;
@@ -181,6 +181,9 @@ Solo si tiene la opción y su tamaño máximo le deja ocupar el área de trabajo
 */
 bool editor_window::can_maximize() const
 {
+    // flotante funciona como una ventana normal: siempre se puede maximizar
+    if (is_floating())
+        return true;
     if (!has_option(WND_MAXIMIZABLE))
         return false;
 
@@ -352,6 +355,36 @@ void editor_window::get_layout_limits(ImVec2& min, ImVec2& max) const
 
 /*
 ==================
+editor_window::is_floating / allows
+==================
+*/
+bool editor_window::is_floating() const
+{
+    return Wnd_Region(this) == LAYOUT_FLOAT;
+}
+
+bool editor_window::allows(unsigned option) const
+{
+    return is_floating() || has_option(option);
+}
+
+/*
+==================
+editor_window::set_default_dock
+==================
+*/
+void editor_window::set_default_dock(layout_region region)
+{
+    default_dock = region;
+}
+
+layout_region editor_window::get_default_dock() const
+{
+    return (layout_region)default_dock;
+}
+
+/*
+==================
 editor_window::build_flags
 ==================
 */
@@ -362,9 +395,9 @@ ImGuiWindowFlags editor_window::build_flags() const
     // sin la flecha ni el doble clic de ImGui: minimizar y maximizar son
     // de draw_caption()
     flags |= ImGuiWindowFlags_NoCollapse;
-    if (!has_option(WND_MOVABLE))
+    if (!allows(WND_MOVABLE))
         flags |= ImGuiWindowFlags_NoMove;
-    if (!has_option(WND_RESIZABLE))
+    if (!allows(WND_RESIZABLE))
         flags |= ImGuiWindowFlags_NoResize;
     if (!has_option(WND_TITLEBAR))
         flags |= ImGuiWindowFlags_NoTitleBar;
@@ -880,9 +913,9 @@ void editor_window::draw_caption()
     const ImRect bar = win->TitleBarRect();
     const float bw = std::floor(ed_style.scaled(ed_style.caption_button_width));
 
-    const bool show_close = has_option(WND_CLOSABLE);
+    const bool show_close = allows(WND_CLOSABLE);
     const bool show_max = can_maximize();
-    const bool show_min = has_option(WND_MINIMIZABLE) && dock_region != LAYOUT_CENTER;
+    const bool show_min = allows(WND_MINIMIZABLE) && dock_region != LAYOUT_CENTER;
 
     // la barra de título está fuera del recorte del contenido; los botones
     // van en la capa de menú, como los de ImGui, para no entrar en la navegación
