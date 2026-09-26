@@ -1,60 +1,45 @@
-#include <iostream>
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_main.h>
-#include <SDL3/SDL_filesystem.h>
+// main.cpp -- punto de entrada de CondemEngine
+//
+//   CondemEngine              muestra un mensaje y termina
+//   CondemEngine -editor      inicia el editor (ImGui + SDL + Vulkan)
+//
+// Los parámetros que empiezan con + se ejecutan como comandos de consola:
+//   CondemEngine -editor +developer 1 +exec editor.cfg
 
-#include "common/cmdlib.h"
-#include "common/condemdef.h"
-#include "client/host.h"
-#include "client/sys.h"
+#include "common/common.h"
+#include "core/cmd.h"
+#include "core/cvar.h"
+#include "engine/console.h"
+#include "sys/sys.h"
+#include "tools/editor/editor.h"
 
-int main(int argc, char **argv)
+int main(int argc, char* argv[])
 {
-    //SDL_SetLogPriorities(SDL_LOG_PRIORITY_VERBOSE);
-    condemparms_t cdparms;
+    COM_InitArgv(argc, argv);
+    Sys_Init();
 
-    InitArgv(argc, argv);
+    Cbuf_Init();
+    Cmd_Init();
+    Cvar_Init();
+    Con_Init();
 
-    if (!SDL_Init(SDL_INIT_VIDEO))
+    // ejecutar los comandos +xxx de la línea de comandos
+    Cbuf_AddText("stuffcmds\n");
+    Cbuf_Execute();
+
+    int ret = 0;
+    // editor mode
+    if (COM_CheckParm("-editor"))
     {
-        Sys_Error("Couldn't initialize SDL: %s", SDL_GetError());
+        ret = Editor_Main();
+    }
+    // engine mode
+    else
+    {
+        Con_Printf("%s %s (%s, %d bits)\n", ENGINE_NAME, ENGINE_VERSION, Sys_PlatformName(), (int)(sizeof(void*) * 8));
+        Con_Printf("Hola mundo! Usa -editor para iniciar el editor.\n");
     }
 
-    char title[128];
-    SDL_snprintf(title, sizeof(title), "%s - %s", CONDEM_ENGINE_NAME, CONDEM_ENGINE_VERSION_STRING);
-
-    SDL_Window *window = SDL_CreateWindow(title, 800, 600, SDL_WINDOW_RESIZABLE);
-    if (!window)
-    {
-        Sys_Error("Couldn't create window: %s", SDL_GetError());
-    }
-
-    cdparms.basedir = SDL_GetCurrentDirectory();
-    cdparms.binarydir = SDL_GetBasePath();
-    cdparms.argc = com_argc;
-    cdparms.argv = com_argv;
-
-    if (cdparms.binarydir)
-        Sys_Printf("Binary is located at %s", cdparms.binarydir);
-
-    Init(&cdparms);
-
-    int running = 1;
-    SDL_Event event;
-    while (running)
-    {
-        while (SDL_PollEvent(&event))
-        {
-            if (event.type == SDL_EVENT_QUIT)
-                running = 0;
-        }
-    }
-
-    Quit();
-
-    SDL_free((void *)cdparms.basedir);
-
-    SDL_DestroyWindow(window);
-    SDL_Quit();
-    return 0;
+    Sys_Shutdown();
+    return ret;
 }

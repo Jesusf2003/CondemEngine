@@ -1,0 +1,61 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+    "configurePresets": [
+        {
+            "name": "msys2-vcpkg",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+            "environment": {
+                "MSYS2_ROOT": "C:/msys64",
+                "VCPKG_ROOT": "C:/vcpkg"
+            },
+            "cacheVariables": {
+                "CONDEM_PLATFORM": "SDL3",
+                "VCPKG_APPLOCAL_DEPS": "OFF"
+            }
+        },
+        {
+            "name": "mingw64",
+            "hidden": true,
+            "inherits": "msys2-vcpkg",
+            "environment": {
+                "MSYS2_ENV": "$env{MSYS2_ROOT}/mingw64",
+                "PATH": "$env{MSYS2_ENV}/bin;$penv{PATH}"
+            },
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "$env{MSYS2_ENV}/bin/gcc.exe",
+                "CMAKE_CXX_COMPILER": "$env{MSYS2_ENV}/bin/g++.exe",
+                "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic",
+                "VCPKG_HOST_TRIPLET": "x64-mingw-dynamic"
+            }
+        },
+        {
+            "name": "mingw32",
+            "hidden": true,
+            "inherits": "msys2-vcpkg",
+            "environment": {
+                "MSYS2_ENV": "$env{MSYS2_ROOT}/mingw32",
+                "PATH": "$env{MSYS2_ENV}/bin;$penv{PATH}"
+            },
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "$env{MSYS2_ENV}/bin/gcc.exe",
+                "CMAKE_CXX_COMPILER": "$env{MSYS2_ENV}/bin/g++.exe",
+                "VCPKG_TARGET_TRIPLET": "x86-mingw-dynamic",
+                "VCPKG_HOST_TRIPLET": "x86-mingw-dynamic"
+            }
+        },
+        { "name": "x64-debug",   "displayName": "GCC 64 bits Debug",   "inherits": "mingw64", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
+        { "name": "x64-release", "displayName": "GCC 64 bits Release", "inherits": "mingw64", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
+        { "name": "x86-debug",   "displayName": "GCC 32 bits Debug",   "inherits": "mingw32", "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
+        { "name": "x86-release", "displayName": "GCC 32 bits Release", "inherits": "mingw32", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } }
+    ],
+    "buildPresets": [
+        { "name": "x64-debug",   "configurePreset": "x64-debug" },
+        { "name": "x64-release", "configurePreset": "x64-release" },
+        { "name": "x86-debug",   "configurePreset": "x86-debug" },
+        { "name": "x86-release", "configurePreset": "x86-release" }
+    ]
+}
