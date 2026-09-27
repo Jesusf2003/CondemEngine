@@ -1,4 +1,4 @@
-// dear imgui, v1.93.0 WIP
+// dear imgui, v1.92.9b
 // (main code and documentation)
 
 // Help:
@@ -402,10 +402,6 @@ IMPLEMENTING SUPPORT for ImGuiBackendFlags_RendererHasTextures:
                             you may use GetMainViewport()->Pos to offset hard-coded positions, e.g. SetNextWindowPos(GetMainViewport()->Pos)
                           - likewise io.MousePos and GetMousePos() will use OS coordinates.
                             If you query mouse positions to interact with non-imgui coordinates you will need to offset them, e.g. subtract GetWindowViewport()->Pos.
-
- - 2026/09/18 (1.93.0) - ImGuiTextFilter: removed `float width` parameter of `Draw(const char* filter, float width)`: prefer using `SetNextItemWidth(float)` which is standard. Kept inline redirection function.
- - 2026/08/03 (1.93.0) - Style: obsoleted `style.CurveTessellationTol (default 1.25)` which was in Pixels² unit in favor of `style.CurveTessellationMaxError` (default 1.12)` which is in Pixels unit.
-                         - style.CurveTessellationMaxError == sqrf(style.CurveTessellationTol).
  - 2026/07/20 (1.92.9) - DragXXX, SliderXXX, InputScalar: with `ImGuiItemFlags_LiveEditOnInputScalar` now defaulting to being disabled:
                          inputting a value with the keyboard doesn't write intermediate values to backing variable. (#9476)
                          - Before: DragFloat() with user typing "123" --> write back 1, then 12, then 123.
@@ -1406,9 +1402,10 @@ static void             WindowSettingsHandler_ApplyAll(ImGuiContext*, ImGuiSetti
 static void             WindowSettingsHandler_WriteAll(ImGuiContext*, ImGuiSettingsHandler*, ImGuiTextBuffer* buf);
 
 // Platform Dependents default implementation for ImGuiPlatformIO functions
-static void             InitializeDefaultPlatformHandlers(ImGuiPlatformIO& platform_io);
 static const char*      Platform_GetClipboardTextFn_DefaultImpl(ImGuiContext* ctx);
 static void             Platform_SetClipboardTextFn_DefaultImpl(ImGuiContext* ctx, const char* text);
+static void             Platform_SetImeDataFn_DefaultImpl(ImGuiContext* ctx, ImGuiViewport* viewport, ImGuiPlatformImeData* data);
+static bool             Platform_OpenInShellFn_DefaultImpl(ImGuiContext* ctx, const char* path);
 
 namespace ImGui
 {
@@ -1603,12 +1600,10 @@ ImGuiStyle::ImGuiStyle()
     DockingNodeHasCloseButton   = true;             // Docking nodes have their own CloseButton() to close all docked windows.
     DockingSeparatorSize        = 2.0f;             // Thickness of resizing border between docked windows
     MouseCursorScale            = 1.0f;             // Scale software rendered mouse cursor (when io.MouseDrawCursor is enabled). May be removed later.
-
-    // Rendering & Tessellation
     AntiAliasedLines            = true;             // Enable anti-aliased lines/borders. Disable if you are really tight on CPU/GPU.
     AntiAliasedLinesUseTex      = true;             // Enable anti-aliased lines/borders using textures where possible. Require backend to render with bilinear filtering (NOT point/nearest filtering).
     AntiAliasedFill             = true;             // Enable anti-aliased filled shapes (rounded rectangles, circles, etc.).
-    CurveTessellationMaxError   = 1.12f;            // Maximum error (in pixels) when using PathBezierCurveTo() without a specific number of segments. Decrease for highly tessellated curves (higher quality, more polygons), increase to reduce quality.
+    CurveTessellationTol        = 1.25f;            // Tessellation tolerance when using PathBezierCurveTo() without a specific number of segments. Decrease for highly tessellated curves (higher quality, more polygons), increase to reduce quality.
     CircleTessellationMaxError  = 0.30f;            // Maximum error (in pixels) allowed when using AddCircle()/AddCircleFilled() or drawing rounded corner rectangles with no explicit segment count specified. Decrease for higher quality but more geometry.
 
     // Behaviors
@@ -1621,9 +1616,6 @@ ImGuiStyle::ImGuiStyle()
     // [Internal]
     _MainScale                  = 1.0f;
     _NextFrameFontSizeBase      = 0.0f;
-#ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-    CurveTessellationTol        = 0.0f;             // Old CurveTessellationTol = CurveTessellationMaxError*CurveTessellationMaxError.
-#endif
 
     // Default theme
     ImGui::StyleColorsDark(this);
@@ -2173,7 +2165,7 @@ ImVec2 ImBezierCubicClosestPoint(const ImVec2& p1, const ImVec2& p2, const ImVec
 }
 
 // Closely mimics PathBezierToCasteljau() in imgui_draw.cpp
-static void ImBezierCubicClosestPointCasteljauStep(const ImVec2& p, ImVec2& p_closest, ImVec2& p_last, float& p_closest_dist2, float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4, float max_error_sqr, int level)
+static void ImBezierCubicClosestPointCasteljauStep(const ImVec2& p, ImVec2& p_closest, ImVec2& p_last, float& p_closest_dist2, float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4, float tess_tol, int level)
 {
     float dx = x4 - x1;
     float dy = y4 - y1;
@@ -2181,7 +2173,7 @@ static void ImBezierCubicClosestPointCasteljauStep(const ImVec2& p, ImVec2& p_cl
     float d3 = ((x3 - x4) * dy - (y3 - y4) * dx);
     d2 = (d2 >= 0) ? d2 : -d2;
     d3 = (d3 >= 0) ? d3 : -d3;
-    if ((d2 + d3) * (d2 + d3) < max_error_sqr * (dx * dx + dy * dy))
+    if ((d2 + d3) * (d2 + d3) < tess_tol * (dx * dx + dy * dy))
     {
         ImVec2 p_current(x4, y4);
         ImVec2 p_line = ImLineClosestPoint(p_last, p_current, p);
@@ -2201,21 +2193,20 @@ static void ImBezierCubicClosestPointCasteljauStep(const ImVec2& p, ImVec2& p_cl
         float x123 = (x12 + x23)*0.5f,    y123 = (y12 + y23)*0.5f;
         float x234 = (x23 + x34)*0.5f,    y234 = (y23 + y34)*0.5f;
         float x1234 = (x123 + x234)*0.5f, y1234 = (y123 + y234)*0.5f;
-        ImBezierCubicClosestPointCasteljauStep(p, p_closest, p_last, p_closest_dist2, x1, y1, x12, y12, x123, y123, x1234, y1234, max_error_sqr, level + 1);
-        ImBezierCubicClosestPointCasteljauStep(p, p_closest, p_last, p_closest_dist2, x1234, y1234, x234, y234, x34, y34, x4, y4, max_error_sqr, level + 1);
+        ImBezierCubicClosestPointCasteljauStep(p, p_closest, p_last, p_closest_dist2, x1, y1, x12, y12, x123, y123, x1234, y1234, tess_tol, level + 1);
+        ImBezierCubicClosestPointCasteljauStep(p, p_closest, p_last, p_closest_dist2, x1234, y1234, x234, y234, x34, y34, x4, y4, tess_tol, level + 1);
     }
 }
 
-// tess_tol is generally the same value you would find in ImGui::GetStyle().CurveTessellationMaxError
+// tess_tol is generally the same value you would find in ImGui::GetStyle().CurveTessellationTol
 // Because those ImXXX functions are lower-level than ImGui:: we cannot access this value automatically.
-ImVec2 ImBezierCubicClosestPointCasteljau(const ImVec2& p1, const ImVec2& p2, const ImVec2& p3, const ImVec2& p4, const ImVec2& p, float max_error)
+ImVec2 ImBezierCubicClosestPointCasteljau(const ImVec2& p1, const ImVec2& p2, const ImVec2& p3, const ImVec2& p4, const ImVec2& p, float tess_tol)
 {
-    IM_ASSERT(max_error > 0.0f);
+    IM_ASSERT(tess_tol > 0.0f);
     ImVec2 p_last = p1;
     ImVec2 p_closest;
     float p_closest_dist2 = FLT_MAX;
-    float max_error_sqr = max_error * max_error;
-    ImBezierCubicClosestPointCasteljauStep(p, p_closest, p_last, p_closest_dist2, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, p4.x, p4.y, max_error_sqr, 0);
+    ImBezierCubicClosestPointCasteljauStep(p, p_closest, p_last, p_closest_dist2, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, p4.x, p4.y, tess_tol, 0);
     return p_closest;
 }
 
@@ -3156,11 +3147,11 @@ IM_MSVC_RUNTIME_CHECKS_RESTORE
 // [SECTION] ImGuiTextFilter
 //-----------------------------------------------------------------------------
 
-// Helper: Parse and apply text filters e.g. 'aaa bbb -ccc'.
+// Helper: Parse and apply text filters. In format "aaaaa[,bbbb][,ccccc]"
 ImGuiTextFilter::ImGuiTextFilter(const char* default_filter) //-V1077
 {
     InputBuf[0] = 0;
-    _CountExclude = 0;
+    CountGrep = 0;
     if (default_filter)
     {
         ImStrncpy(InputBuf, default_filter, IM_COUNTOF(InputBuf));
@@ -3168,110 +3159,84 @@ ImGuiTextFilter::ImGuiTextFilter(const char* default_filter) //-V1077
     }
 }
 
-bool ImGuiTextFilter::Draw(const char* label)
+bool ImGuiTextFilter::Draw(const char* label, float width)
 {
-    return DrawWithHint(label, "incl -excl");
-}
-
-// Use ImGui::SetNextItemWidth() manually if you want to use this.
-bool ImGuiTextFilter::DrawWithHint(const char* label, const char* hint)
-{
-    bool value_changed = ImGui::InputTextWithHint(label, hint, InputBuf, IM_COUNTOF(InputBuf));
+    if (width != 0.0f)
+        ImGui::SetNextItemWidth(width);
+    bool value_changed = ImGui::InputText(label, InputBuf, IM_COUNTOF(InputBuf));
     if (value_changed)
         Build();
     return value_changed;
 }
 
-// Parse filter and split into a format optimal for PassFilter()
+void ImGuiTextFilter::ImGuiTextRange::split(char separator, ImVector<ImGuiTextRange>* out) const
+{
+    out->resize(0);
+    const char* wb = b;
+    const char* we = wb;
+    while (we < e)
+    {
+        if (*we == separator)
+        {
+            out->push_back(ImGuiTextRange(wb, we));
+            wb = we + 1;
+        }
+        we++;
+    }
+    if (wb != we)
+        out->push_back(ImGuiTextRange(wb, we));
+}
+
 void ImGuiTextFilter::Build()
 {
-    _Items.resize(0);
-    _CountExclude = 0;
+    Filters.resize(0);
+    ImGuiTextRange input_range(InputBuf, InputBuf + ImStrlen(InputBuf));
+    input_range.split(',', &Filters);
 
-    const char* buf_e = InputBuf + ImStrlen(InputBuf);
-    const char* word_e;
-    int seq_incl_start_idx = -1;
-    for (const char* word_b = InputBuf; word_b < buf_e; word_b = word_e + 1)
+    CountGrep = 0;
+    for (ImGuiTextRange& f : Filters)
     {
-        // Trim blanks
-        while (word_b < buf_e && ImCharIsBlankA(word_b[0])) // FIXME: UTF-8 support
-            word_b++;
-        const bool is_excl = (word_b < buf_e && word_b[0] == '-');
-        if (is_excl)
-            word_b++;
-        const bool is_quote = (word_b < buf_e && word_b[0] == '\"');
-        if (is_quote)
-        {
-            // Parsing quotes. Omit storing leading/trailing quotes.
-            word_e = ImStrchrRange(++word_b, buf_e, '\"');
-            if (word_e == NULL)
-                word_e = buf_e;
-        }
-        else
-        {
-            // Handle both ' ' and ',' separators.
-            for (word_e = word_b; word_e < buf_e; word_e++)
-                if (*word_e == ' ' || *word_e == ',')
-                    break;
-        }
-
-        // Min length
-        if (word_e - word_b > 0)
-        {
-            // Add to list. The '-' is not stored in items but implicitly inferred using (n < CountExclude).
-            // FIXME-OPT: as items are derived from user input buffer and we expect the insert() to behave sanely.
-            if (is_excl)
-            {
-                _Items.insert(_Items.Data + _CountExclude, ImGuiTextFilterItem(word_b, word_e));
-                _CountExclude++;
-                if (seq_incl_start_idx != -1)
-                    seq_incl_start_idx++;
-            }
-            else
-            {
-                if (seq_incl_start_idx == -1)
-                    seq_incl_start_idx = _Items.Size;
-                _Items.insert(_Items.Data + _Items.Size, ImGuiTextFilterItem(word_b, word_e));
-                _Items.Data[seq_incl_start_idx].CountInclude++;
-            }
-        }
-
-        // Next sequence
-        if (word_e[0] == ',')
-            seq_incl_start_idx = -1;
+        while (f.b < f.e && ImCharIsBlankA(f.b[0]))
+            f.b++;
+        while (f.e > f.b && ImCharIsBlankA(f.e[-1]))
+            f.e--;
+        if (f.empty())
+            continue;
+        if (f.b[0] != '-')
+            CountGrep += 1;
     }
 }
 
-// FIXME: Could use a specialized ImStristr() + pre-convert our filter to uppercase.
 bool ImGuiTextFilter::PassFilter(const char* text, const char* text_end) const
 {
-    if (_Items.Size == 0)
+    if (Filters.Size == 0)
         return true;
+
     if (text == NULL)
         text = text_end = "";
 
-    // Filters are sorted so that '-' ones are always leading.
-    ImGuiTextFilterItem* seq = _Items.Data;
-    ImGuiTextFilterItem* seq_excl_end = _Items.Data + _CountExclude;
-    for (; seq < seq_excl_end; seq++)
-        if (ImStristr(text, text_end, seq->Begin, seq->Begin + seq->Len) != NULL)
-            return false;
-
-    // Process includes
-    ImGuiTextFilterItem* seq_incl_end = _Items.Data + _Items.Size;
-    if (seq == seq_incl_end) // When no inclusion are specified (only exclusions) we implicitly pass
-        return true;
-    while (seq < seq_incl_end)
+    for (const ImGuiTextRange& f : Filters)
     {
-        ImGuiTextFilterItem* seq_next = seq + seq->CountInclude;
-        IM_ASSERT_PARANOID(seq->CountInclude > 0 && seq_next <= seq_incl_end);
-        for (; seq < seq_next; seq++)
-            if (ImStristr(text, text_end, seq->Begin, seq->Begin + seq->Len) == NULL)
-                break;
-        if (seq == seq_next) // All matched
-            return true;
-        seq = seq_next; // Try next
+        if (f.b == f.e)
+            continue;
+        if (f.b[0] == '-')
+        {
+            // Subtract
+            if (ImStristr(text, text_end, f.b + 1, f.e) != NULL)
+                return false;
+        }
+        else
+        {
+            // Grep
+            if (ImStristr(text, text_end, f.b, f.e) != NULL)
+                return true;
+        }
     }
+
+    // Implicit * grep
+    if (CountGrep == 0)
+        return true;
+
     return false;
 }
 
@@ -4046,7 +4011,6 @@ void ImGui::RenderTextWrapped(ImVec2 pos, const char* text, const char* text_end
 // Effectively as this is called from widget doing their own coarse clipping it's not very valuable presently. Next time function will take
 // better advantage of the render function taking size into account for coarse clipping.
 void ImGui::RenderTextClippedEx(ImDrawList* draw_list, const ImVec2& pos_min, const ImVec2& pos_max, const char* text, const char* text_display_end, const ImVec2* text_size_if_known, const ImVec2& align, const ImRect* clip_rect)
-// DOES NOT CALL LogRenderedText(), unlike RenderTextClipped!!!
 {
     // Perform CPU side clipping for single clipped element to avoid using scissor state
     ImVec2 pos = pos_min;
@@ -4345,7 +4309,7 @@ ImGuiContext::ImGuiContext(ImFontAtlas* shared_font_atlas)
     Font = NULL;
     FontBaked = NULL;
     FontSize = FontSizeBase = FontBakedScale = CurrentDpiScale = 0.0f;
-    CurrentPixelDensity = 1.0f;
+    FontRasterizerDensity = 1.0f;
     IO.Fonts = shared_font_atlas ? shared_font_atlas : IM_NEW(ImFontAtlas)();
     if (shared_font_atlas == NULL)
         IO.Fonts->OwnerContext = this;
@@ -4448,7 +4412,7 @@ ImGuiContext::ImGuiContext(ImFontAtlas* shared_font_atlas)
 
     NavJustMovedFromFocusScopeId = NavJustMovedToId = NavJustMovedToFocusScopeId = 0;
     NavJustMovedToKeyMods = ImGuiMod_None;
-    NavJustMovedToIsTabbing = NavJustMovedToIsInit = false;
+    NavJustMovedToIsTabbing = false;
     NavJustMovedToHasSelectionData = false;
 
     // All platforms use Ctrl+Tab but Ctrl<>Super are swapped on Mac...
@@ -4492,7 +4456,6 @@ ImGuiContext::ImGuiContext(ImFontAtlas* shared_font_atlas)
     MouseCursor = ImGuiMouseCursor_Arrow;
     MouseStationaryTimer = 0.0f;
 
-    MixedValueLabel = "-";
     InputTextPasswordFontBackupFlags = ImFontFlags_None;
     InputTextReactivateId = 0;
     TempInputId = 0;
@@ -4601,7 +4564,10 @@ void ImGui::Initialize()
     LocalizeRegisterEntries(GLocalizationEntriesEnUS, IM_COUNTOF(GLocalizationEntriesEnUS));
 
     // Setup default ImGuiPlatformIO clipboard/IME handlers.
-    InitializeDefaultPlatformHandlers(g.PlatformIO);
+    g.PlatformIO.Platform_GetClipboardTextFn = Platform_GetClipboardTextFn_DefaultImpl;    // Platform dependent default implementations
+    g.PlatformIO.Platform_SetClipboardTextFn = Platform_SetClipboardTextFn_DefaultImpl;
+    g.PlatformIO.Platform_OpenInShellFn = Platform_OpenInShellFn_DefaultImpl;
+    g.PlatformIO.Platform_SetImeDataFn = Platform_SetImeDataFn_DefaultImpl;
 
     // Setup session starting date
 #ifndef IMGUI_DISABLE_TIME_FUNCTIONS
@@ -4843,8 +4809,8 @@ static void SetCurrentWindow(ImGuiWindow* window)
     {
         if (g.IO.BackendFlags & ImGuiBackendFlags_RendererHasTextures)
         {
-            g.CurrentPixelDensity = window->Viewport->FramebufferScale.x; // == SetPixelDensity()
-            IM_ASSERT(g.CurrentPixelDensity != 0.0f);
+            ImGuiViewport* viewport = window->Viewport;
+            g.FontRasterizerDensity = (viewport->FramebufferScale.x != 0.0f) ? viewport->FramebufferScale.x : g.IO.DisplayFramebufferScale.x; // == SetFontRasterizerDensity()
         }
         const bool backup_skip_items = window->SkipItems;
         window->SkipItems = false;
@@ -5450,13 +5416,11 @@ static ImDrawList* GetViewportBgFgDrawList(ImGuiViewportP* viewport, size_t draw
     }
 
     // Our ImDrawList system requires that there is always a command
-    if (viewport->BgFgDrawListsLastFrameActive[drawlist_no] != g.FrameCount)
+    if (viewport->BgFgDrawListsLastTimeActive[drawlist_no] != (float)g.Time)
     {
         draw_list->_ResetForNewFrame();
-        draw_list->_SetPixelDensity(viewport->FramebufferScale.x);
         draw_list->PushTexture(g.IO.Fonts->TexRef);
         draw_list->PushClipRect(viewport->Pos, viewport->Pos + viewport->Size, false);
-        viewport->BgFgDrawListsLastFrameActive[drawlist_no] = g.FrameCount;
         viewport->BgFgDrawListsLastTimeActive[drawlist_no] = (float)g.Time;
     }
     return draw_list;
@@ -5796,7 +5760,7 @@ static void SetupDrawListSharedData()
     for (ImGuiViewportP* viewport : g.Viewports)
         virtual_space.Add(viewport->GetMainRect());
     g.DrawListSharedData.ClipRectFullscreen = virtual_space.ToVec4();
-    g.DrawListSharedData.CurveTessellationMaxError = g.Style.CurveTessellationMaxError;
+    g.DrawListSharedData.CurveTessellationTol = g.Style.CurveTessellationTol;
     g.DrawListSharedData.SetCircleTessellationMaxError(g.Style.CircleTessellationMaxError);
     g.DrawListSharedData.InitialFlags = ImDrawListFlags_None;
     if (g.Style.AntiAliasedLines)
@@ -5807,6 +5771,7 @@ static void SetupDrawListSharedData()
         g.DrawListSharedData.InitialFlags |= ImDrawListFlags_AntiAliasedFill;
     if (g.IO.BackendFlags & ImGuiBackendFlags_RendererHasVtxOffset)
         g.DrawListSharedData.InitialFlags |= ImDrawListFlags_AllowVtxOffset;
+    g.DrawListSharedData.InitialFringeScale = 1.0f; // FIXME-DPI: Change this for some DPI scaling experiments.
 }
 
 void ImGui::NewFrame()
@@ -6212,7 +6177,7 @@ static void InitViewportDrawData(ImGuiViewportP* viewport)
     draw_data->TotalVtxCount = draw_data->TotalIdxCount = 0;
     draw_data->DisplayPos = viewport->Pos;
     draw_data->DisplaySize = is_minimized ? ImVec2(0.0f, 0.0f) : viewport->Size;
-    draw_data->FramebufferScale = viewport->FramebufferScale;
+    draw_data->FramebufferScale = (viewport->FramebufferScale.x != 0.0f) ? viewport->FramebufferScale : g.IO.DisplayFramebufferScale;
     draw_data->OwnerViewport = viewport;
     draw_data->Textures = &g.PlatformIO.Textures;
 #ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
@@ -6493,7 +6458,7 @@ void ImGui::Render()
     for (ImGuiViewportP* viewport : g.Viewports)
     {
         InitViewportDrawData(viewport);
-        if (viewport->BgFgDrawLists[0] != NULL && viewport->BgFgDrawListsLastFrameActive[0] == g.FrameCount)
+        if (viewport->BgFgDrawLists[0] != NULL && viewport->BgFgDrawListsLastTimeActive[0] == (float)g.Time)
             AddDrawListToDrawDataEx(&viewport->DrawDataP, viewport->DrawDataBuilder.Layers[0], GetBackgroundDrawList(viewport));
     }
 
@@ -6525,7 +6490,7 @@ void ImGui::Render()
         FlattenDrawDataIntoSingleLayer(&viewport->DrawDataBuilder);
 
         // Add foreground ImDrawList (for each active viewport)
-        if (viewport->BgFgDrawLists[1] != NULL && viewport->BgFgDrawListsLastFrameActive[1] == g.FrameCount)
+        if (viewport->BgFgDrawLists[1] != NULL && viewport->BgFgDrawListsLastTimeActive[1] == (float)g.Time)
             AddDrawListToDrawDataEx(&viewport->DrawDataP, viewport->DrawDataBuilder.Layers[0], GetForegroundDrawList(viewport));
 
         // We call _PopUnusedDrawCmd() last thing, as RenderDimmedBackgrounds() rely on a valid command being there (especially in docking branch).
@@ -6839,9 +6804,6 @@ bool ImGui::BeginChildEx(const char* name, ImGuiID id, const ImVec2& size_arg, I
     ImGuiWindow* parent_window = g.CurrentWindow;
     IM_ASSERT(id != 0);
 
-    if (g.NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasChildFlags)
-        child_flags = (child_flags | g.NextWindowData.ChildFlagsSet) & ~g.NextWindowData.ChildFlagsClear;
-
     // Sanity check as it is likely that some user will accidentally pass ImGuiWindowFlags into the ImGuiChildFlags argument.
     const ImGuiChildFlags ImGuiChildFlags_SupportedMask_ = ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_ResizeX | ImGuiChildFlags_ResizeY | ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysAutoResize | ImGuiChildFlags_FrameStyle | ImGuiChildFlags_NavFlattened;
     IM_UNUSED(ImGuiChildFlags_SupportedMask_);
@@ -6904,7 +6866,13 @@ bool ImGui::BeginChildEx(const char* name, ImGuiID id, const ImVec2& size_arg, I
         }
     }
     SetNextWindowSize(size);
-    SetNextWindowChildFlags(child_flags, true);
+
+    // Forward child flags (we allow prior settings to merge but it'll only work for adding flags)
+    if (g.NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasChildFlags)
+        g.NextWindowData.ChildFlags |= child_flags;
+    else
+        g.NextWindowData.ChildFlags = child_flags;
+    g.NextWindowData.HasFlags |= ImGuiNextWindowDataFlags_HasChildFlags;
 
     // Build up name. If you need to append to a same child from multiple location in the ID stack, use BeginChild(ImGuiID id) with a stable value.
     // FIXME: 2023/11/14: commented out shorted version. We had an issue with multiple ### in child window path names, which the trailing hash helped workaround.
@@ -7959,9 +7927,6 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
     if (g.DebugBreakInWindow == window->ID)
         IM_DEBUG_BREAK();
 
-    if (g.NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasWindowFlags)
-        flags = (flags | g.NextWindowData.WindowFlagsSet) & ~g.NextWindowData.WindowFlagsClear;
-
     // Automatically disable manual moving/resizing when NoInputs is set
     if ((flags & ImGuiWindowFlags_NoInputs) == ImGuiWindowFlags_NoInputs)
         flags |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
@@ -7989,7 +7954,7 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
             SetWindowConditionAllowFlags(window, ImGuiCond_Appearing, true);
         window->FlagsPreviousFrame = window->Flags;
         window->Flags = (ImGuiWindowFlags)flags;
-        window->ChildFlags = (g.NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasChildFlags) ? g.NextWindowData.ChildFlagsSet : 0;
+        window->ChildFlags = (g.NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasChildFlags) ? g.NextWindowData.ChildFlags : 0;
         window->LastFrameActive = current_frame;
         window->LastTimeActive = (float)g.Time;
         window->BeginOrderWithinParent = 0;
@@ -8613,7 +8578,6 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
 
         // Setup draw list and outer clipping rectangle
         IM_ASSERT(window->DrawList->CmdBuffer.Size == 1 && window->DrawList->CmdBuffer[0].ElemCount == 0);
-        window->DrawList->_SetPixelDensity(window->Viewport->FramebufferScale.x);
         window->DrawList->PushTexture(g.Font->OwnerAtlas->TexRef);
         PushClipRect(host_rect.Min, host_rect.Max, false);
 
@@ -8791,7 +8755,7 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
         // Set default BgClickFlags
         // This is set at the end of this function, so UpdateWindowManualResize()/ClampWindowPos() may use last-frame value if overridden by user code.
         // FIXME: The general intent is that we will later expose config options to default to enable scrolling + select scrolling mouse button.
-        window->BgClickFlags = (flags & ImGuiWindowFlags_ChildWindow) ? parent_window->BgClickFlags : (g.IO.ConfigWindowsMoveFromTitleBarOnly ? ImGuiWindowBgClickFlags_None : ImGuiWindowBgClickFlags_Move); // -V1004
+        window->BgClickFlags = (flags & ImGuiWindowFlags_ChildWindow) ? parent_window->BgClickFlags : (g.IO.ConfigWindowsMoveFromTitleBarOnly ? ImGuiWindowBgClickFlags_None : ImGuiWindowBgClickFlags_Move);
 
         // We fill last item data based on Title Bar/Tab, in order for IsItemHovered() and IsItemActive() to be usable after Begin().
         // This is useful to allow creating context menus on title bar only, etc.
@@ -9467,26 +9431,6 @@ void ImGui::SetNextWindowRefreshPolicy(ImGuiWindowRefreshFlags flags)
     g.NextWindowData.RefreshFlagsVal = flags;
 }
 
-void ImGui::SetNextWindowFlags(ImGuiWindowFlags flags, bool enabled)
-{
-    ImGuiContext& g = *GImGui;
-    if ((g.NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasWindowFlags) == 0)
-        g.NextWindowData.WindowFlagsSet = g.NextWindowData.WindowFlagsClear = ImGuiChildFlags_None;
-    g.NextWindowData.WindowFlagsSet = enabled ? (g.NextWindowData.WindowFlagsSet | flags) : (g.NextWindowData.WindowFlagsSet & ~flags);
-    g.NextWindowData.WindowFlagsClear = !enabled ? (g.NextWindowData.WindowFlagsClear | flags) : (g.NextWindowData.WindowFlagsClear & ~flags);
-    g.NextWindowData.HasFlags |= ImGuiNextWindowDataFlags_HasWindowFlags;
-}
-
-void ImGui::SetNextWindowChildFlags(ImGuiChildFlags flags, bool enabled)
-{
-    ImGuiContext& g = *GImGui;
-    if ((g.NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasChildFlags) == 0)
-        g.NextWindowData.ChildFlagsSet = g.NextWindowData.ChildFlagsClear = ImGuiChildFlags_None;
-    g.NextWindowData.ChildFlagsSet = enabled ? (g.NextWindowData.ChildFlagsSet | flags) : (g.NextWindowData.ChildFlagsSet & ~flags);
-    g.NextWindowData.ChildFlagsClear = !enabled ? (g.NextWindowData.ChildFlagsClear | flags) : (g.NextWindowData.ChildFlagsClear & ~flags);
-    g.NextWindowData.HasFlags |= ImGuiNextWindowDataFlags_HasChildFlags;
-}
-
 ImDrawList* ImGui::GetWindowDrawList()
 {
     ImGuiWindow* window = GetCurrentWindow();
@@ -9716,7 +9660,7 @@ bool ImGui::IsRectVisible(const ImVec2& rect_min, const ImVec2& rect_max)
 // - UnregisterFontAtlas() [Internal]
 // - SetCurrentFont() [Internal]
 // - UpdateCurrentFontSize() [Internal]
-// - SetPixelDensity() [Internal]
+// - SetFontRasterizerDensity() [Internal]
 // - PushFont()
 // - PopFont()
 //-----------------------------------------------------------------------------
@@ -9909,7 +9853,7 @@ void ImGui::UpdateCurrentFontSize(float restore_font_size_after_scaling)
     final_size = GetRoundedFontSize(final_size);
     final_size = ImClamp(final_size, 1.0f, IMGUI_FONT_SIZE_MAX);
     if (g.Font != NULL && (g.IO.BackendFlags & ImGuiBackendFlags_RendererHasTextures))
-        g.Font->CurrentRasterizerDensity = g.CurrentPixelDensity;
+        g.Font->CurrentRasterizerDensity = g.FontRasterizerDensity;
 
     g.FontSize = final_size;
     g.DrawListSharedData.FontSize = g.FontSize;
@@ -9933,13 +9877,13 @@ void ImGui::UpdateCurrentFontSize(float restore_font_size_after_scaling)
 
 // Exposed in case user may want to override setting density.
 // IMPORTANT: Begin()/End() is overriding density. Be considerate of this you change it.
-void ImGui::SetPixelDensity(float pixel_density)
+void ImGui::SetFontRasterizerDensity(float rasterizer_density)
 {
     ImGuiContext& g = *GImGui;
     IM_ASSERT(g.IO.BackendFlags & ImGuiBackendFlags_RendererHasTextures);
-    if (g.CurrentPixelDensity == pixel_density)
+    if (g.FontRasterizerDensity == rasterizer_density)
         return;
-    g.CurrentPixelDensity = pixel_density;
+    g.FontRasterizerDensity = rasterizer_density;
     UpdateCurrentFontSize(0.0f);
 }
 
@@ -11783,7 +11727,7 @@ static void ImGui::ErrorCheckNewFrameSanityChecks()
     IM_ASSERT((g.IO.DeltaTime > 0.0f || g.FrameCount == 0)              && "Need a positive DeltaTime!");
     IM_ASSERT((g.FrameCount == 0 || g.FrameCountEnded == g.FrameCount)  && "Forgot to call Render() or EndFrame() at the end of the previous frame?");
     IM_ASSERT(g.IO.DisplaySize.x >= 0.0f && g.IO.DisplaySize.y >= 0.0f  && "Invalid DisplaySize value!");
-    IM_ASSERT(g.Style.CurveTessellationMaxError > 0.0f                  && "Invalid style setting!");
+    IM_ASSERT(g.Style.CurveTessellationTol > 0.0f                       && "Invalid style setting!");
     IM_ASSERT(g.Style.CircleTessellationMaxError > 0.0f                 && "Invalid style setting!");
     IM_ASSERT(g.Style.Alpha >= 0.0f && g.Style.Alpha <= 1.0f            && "Invalid style setting!"); // Allows us to avoid a few clamps in color computations
     IM_ASSERT(g.Style.WindowMinSize.x >= 1.0f && g.Style.WindowMinSize.y >= 1.0f && "Invalid style setting!");
@@ -11833,11 +11777,6 @@ static void ImGui::ErrorCheckNewFrameSanityChecks()
         g.PlatformIO.Platform_GetClipboardTextFn = [](ImGuiContext* ctx) { return ctx->IO.GetClipboardTextFn(ctx->IO.ClipboardUserData); };
     if (g.IO.SetClipboardTextFn != NULL && (g.PlatformIO.Platform_SetClipboardTextFn == NULL || g.PlatformIO.Platform_SetClipboardTextFn == Platform_SetClipboardTextFn_DefaultImpl))
         g.PlatformIO.Platform_SetClipboardTextFn = [](ImGuiContext* ctx, const char* text) { return ctx->IO.SetClipboardTextFn(ctx->IO.ClipboardUserData, text); };
-
-    // Remap legacy CurveTessellationTol into CurveTessellationMaxError (OBSOLETED in 1.93.0, August 2026)
-    if (g.Style.CurveTessellationTol != 0.0f)
-        g.Style.CurveTessellationMaxError = ImSqrt(g.Style.CurveTessellationTol);
-    g.Style.CurveTessellationTol = 0.0f;
 #endif
 
     // Perform simple check: error if Docking or Viewport are enabled _exactly_ on frame 1 (instead of frame 0 or later), which is a common error leading to loss of .ini data.
@@ -13400,7 +13339,13 @@ bool ImGui::BeginPopupMenuEx(ImGuiID id, const char* label, ImGuiWindowFlags ext
     // As we bypass BeginChild(), set ImGuiChildFlags_AlwaysAutoResize as it is checked independently from ImGuiWindowFlags_AlwaysAutoResize for now (see #9355)
     // Ideally we should remove setting ImGuiWindowFlags_AlwaysAutoResize in BeginChild().
     if ((extra_window_flags & ImGuiWindowFlags_ChildWindow) && (extra_window_flags & ImGuiWindowFlags_AlwaysAutoResize))
-        SetNextWindowChildFlags(ImGuiChildFlags_AlwaysAutoResize, true);
+    {
+        if (g.NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasChildFlags)
+            g.NextWindowData.ChildFlags |= ImGuiChildFlags_AlwaysAutoResize;
+        else
+            g.NextWindowData.ChildFlags = ImGuiChildFlags_AlwaysAutoResize;
+        g.NextWindowData.HasFlags |= ImGuiNextWindowDataFlags_HasChildFlags;
+    }
 
     char name[128];
     IM_ASSERT(extra_window_flags & ImGuiWindowFlags_ChildMenu);
@@ -13501,7 +13446,7 @@ bool ImGui::IsPopupOpenRequestForItem(ImGuiPopupFlags popup_flags, ImGuiID id)
 {
     ImGuiContext& g = *GImGui;
     ImGuiMouseButton mouse_button = GetMouseButtonFromPopupFlags(popup_flags);
-    if (IsMouseReleased(mouse_button, id) && IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup))
+    if (IsMouseReleased(mouse_button) && IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup))
         return true;
     if (g.NavOpenContextMenuItemId == id && (IsItemFocused() || id == g.CurrentWindow->MoveId))
         return true;
@@ -13512,7 +13457,7 @@ bool ImGui::IsPopupOpenRequestForWindow(ImGuiPopupFlags popup_flags)
 {
     ImGuiContext& g = *GImGui;
     ImGuiMouseButton mouse_button = GetMouseButtonFromPopupFlags(popup_flags);
-    if (IsMouseReleased(mouse_button, ImGuiKeyOwner_NoOwner) && IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup))
+    if (IsMouseReleased(mouse_button) && IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup))
         if (!(popup_flags & ImGuiPopupFlags_NoOpenOverItems) || !IsAnyItemHovered())
             return true;
     if (g.NavOpenContextMenuWindowId && g.CurrentWindow->ID)
@@ -13583,9 +13528,9 @@ bool ImGui::BeginPopupContextVoid(const char* str_id, ImGuiPopupFlags popup_flag
     ImGuiWindow* window = g.CurrentWindow;
     if (!str_id)
         str_id = "void_context";
-    ImGuiID id = window->GetID(str_id); // FIXME: Use a global ID?
+    ImGuiID id = window->GetID(str_id);
     ImGuiMouseButton mouse_button = GetMouseButtonFromPopupFlags(popup_flags);
-    if (IsMouseReleased(mouse_button, id) && !IsWindowHovered(ImGuiHoveredFlags_AnyWindow))
+    if (IsMouseReleased(mouse_button) && !IsWindowHovered(ImGuiHoveredFlags_AnyWindow))
         if (GetTopMostPopupModal() == NULL)
             OpenPopupEx(id, popup_flags);
     return BeginPopupEx(id, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings);
@@ -14913,7 +14858,6 @@ void ImGui::NavInitRequestApplyResult()
         g.NavJustMovedToFocusScopeId = result->FocusScopeId;
         g.NavJustMovedToKeyMods = 0;
         g.NavJustMovedToIsTabbing = false;
-        g.NavJustMovedToIsInit = true;
         g.NavJustMovedToHasSelectionData = (result->ItemFlags & ImGuiItemFlags_HasSelectionUserData) != 0;
     }
 
@@ -15181,7 +15125,6 @@ void ImGui::NavMoveRequestApplyResult()
         g.NavJustMovedToFocusScopeId = result->FocusScopeId;
         g.NavJustMovedToKeyMods = g.NavMoveKeyMods;
         g.NavJustMovedToIsTabbing = (g.NavMoveFlags & ImGuiNavMoveFlags_IsTabbing) != 0;
-        g.NavJustMovedToIsInit = false;
         g.NavJustMovedToHasSelectionData = (result->ItemFlags & ImGuiItemFlags_HasSelectionUserData) != 0;
         //IMGUI_DEBUG_LOG_NAV("[nav] NavJustMovedFromFocusScopeId = 0x%08X, NavJustMovedToFocusScopeId = 0x%08X\n", g.NavJustMovedFromFocusScopeId, g.NavJustMovedToFocusScopeId);
     }
@@ -16108,9 +16051,17 @@ const ImGuiPayload* ImGui::AcceptDragDropPayload(const char* type, ImGuiDragDrop
     flags |= (g.DragDropSourceFlags & ImGuiDragDropFlags_AcceptNoDrawDefaultRect); // Source can also inhibit the preview (useful for external sources that live for 1 frame)
     const bool draw_target_rect = payload.Preview && !(flags & ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
     if (draw_target_rect && g.DragDropTargetFullViewport != 0)
-        RenderDragDropTargetRectForViewport(g.DragDropTargetFullViewport, g.DragDropTargetRect);
+    {
+        ImGuiViewport* viewport = FindViewportByID(g.DragDropTargetFullViewport);
+        IM_ASSERT(viewport != NULL);
+        ImRect bb = g.DragDropTargetRect;
+        bb.Expand(-3.5f);
+        RenderDragDropTargetRectEx(GetForegroundDrawList(viewport), bb, g.Style.DragDropTargetRounding);
+    }
     else if (draw_target_rect)
+    {
         RenderDragDropTargetRectForItem(r);
+    }
 
     g.DragDropAcceptFrameCount = g.FrameCount;
     if ((g.DragDropSourceFlags & ImGuiDragDropFlags_SourceExtern) && g.DragDropMouseButton == -1)
@@ -16139,16 +16090,6 @@ void ImGui::RenderDragDropTargetRectForItem(const ImRect& bb)
     RenderDragDropTargetRectEx(window->DrawList, bb_display, g.Style.DragDropTargetRounding);
     if (push_clip_rect)
         window->DrawList->PopClipRect();
-}
-
-void ImGui::RenderDragDropTargetRectForViewport(ImGuiID viewport_id, const ImRect& bb)
-{
-    ImGuiContext& g = *GImGui;
-    ImGuiViewport* viewport = FindViewportByID(viewport_id);
-    IM_ASSERT(viewport != NULL);
-    ImRect bb_padded = bb;
-    bb_padded.Expand(-g.Style.DragDropTargetPadding);
-    RenderDragDropTargetRectEx(GetForegroundDrawList(viewport), bb_padded, g.Style.DragDropTargetRounding);
 }
 
 void ImGui::RenderDragDropTargetRectEx(ImDrawList* draw_list, const ImRect& bb, float rounding)
@@ -16920,7 +16861,6 @@ void ImGuiPlatformIO::ClearPlatformHandlers()
     Platform_OnChangedViewport = NULL;
     Platform_GetWindowWorkAreaInsets = NULL;
     Platform_CreateVkSurface = NULL;
-    InitializeDefaultPlatformHandlers(*this); // Prevents losing the functionality provided by Platform_*_DefaultImpl on backend re-creation.
 }
 
 void ImGuiPlatformIO::ClearRendererHandlers()
@@ -16930,7 +16870,7 @@ void ImGuiPlatformIO::ClearRendererHandlers()
     Renderer_CreateWindow = Renderer_DestroyWindow = NULL;
     Renderer_SetWindowSize = NULL;
     Renderer_RenderWindow = Renderer_SwapBuffers = NULL;
-    DrawCallback_ResetRenderState = DrawCallback_SetSamplerLinear = DrawCallback_SetSamplerNearest = DrawCallback_SetSamplerFromTex = NULL;
+    DrawCallback_ResetRenderState = DrawCallback_SetSamplerLinear = DrawCallback_SetSamplerNearest = NULL;
 }
 
 ImGuiViewport* ImGui::GetMainViewport()
@@ -17208,10 +17148,12 @@ static void ImGui::UpdateViewportsNewFrame()
     IM_ASSERT(main_viewport->Window == NULL);
     ImVec2 main_viewport_pos = viewports_enabled ? g.PlatformIO.Platform_GetWindowPos(main_viewport) : ImVec2(0.0f, 0.0f);
     ImVec2 main_viewport_size = g.IO.DisplaySize;
+    ImVec2 main_viewport_framebuffer_scale = g.IO.DisplayFramebufferScale;
     if (viewports_enabled && (main_viewport->Flags & ImGuiViewportFlags_IsMinimized))
     {
         main_viewport_pos = main_viewport->Pos; // Preserve last pos/size when minimized (FIXME: We don't do the same for Size outside of the viewport path)
         main_viewport_size = main_viewport->Size;
+        main_viewport_framebuffer_scale = main_viewport->FramebufferScale;
     }
     AddUpdateViewport(NULL, IMGUI_VIEWPORT_DEFAULT_ID, main_viewport_pos, main_viewport_size, ImGuiViewportFlags_OwnedByApp | ImGuiViewportFlags_CanHostOtherWindows);
 
@@ -17472,12 +17414,6 @@ ImGuiViewportP* ImGui::AddUpdateViewport(ImGuiWindow* window, ImGuiID id, const 
     viewport->LastFrameActive = g.FrameCount;
     viewport->UpdateWorkRect();
     IM_ASSERT(window == NULL || viewport->ID == window->ID);
-
-    // Initialize FramebufferScale for main viewport and new viewports, before UpdatePlatformWindows() -> Platform_GetWindowFramebufferScale() has a chance to run.
-    // FIXME: New viewport on monitors with a different scale will run for a frame with wrong scale? (#9502)
-    // A workaround could be to cache last known FramebufferScale per monitor, so the heuristic can pull it from monitor.
-    if (viewport->FramebufferScale.x <= 0.0f || viewport->FramebufferScale.y <= 0.0f || viewport->ID == IMGUI_VIEWPORT_DEFAULT_ID)
-        viewport->FramebufferScale = g.IO.DisplayFramebufferScale;
 
     if (window != NULL)
         window->ViewportOwned = true;
@@ -22026,7 +21962,7 @@ static void Platform_SetClipboardTextFn_DefaultImpl(ImGuiContext*, const char* t
     ::CloseClipboard();
 }
 
-#elif defined(__APPLE__) && defined(TARGET_OS_OSX) && TARGET_OS_OSX && defined(IMGUI_ENABLE_OSX_DEFAULT_CLIPBOARD_FUNCTIONS)
+#elif defined(__APPLE__) && TARGET_OS_OSX && defined(IMGUI_ENABLE_OSX_DEFAULT_CLIPBOARD_FUNCTIONS)
 
 #include <Carbon/Carbon.h>  // Use old API to avoid need for separate .mm file
 static PasteboardRef main_clipboard = 0;
@@ -22197,15 +22133,6 @@ static void Platform_SetImeDataFn_DefaultImpl(ImGuiContext*, ImGuiViewport* view
 static void Platform_SetImeDataFn_DefaultImpl(ImGuiContext*, ImGuiViewport*, ImGuiPlatformImeData*) {}
 
 #endif // Default IME handlers
-
-// Setup default ImGuiPlatformIO clipboard/IME handlers
-static void InitializeDefaultPlatformHandlers(ImGuiPlatformIO& platform_io)
-{
-    platform_io.Platform_GetClipboardTextFn = Platform_GetClipboardTextFn_DefaultImpl;
-    platform_io.Platform_SetClipboardTextFn = Platform_SetClipboardTextFn_DefaultImpl;
-    platform_io.Platform_OpenInShellFn = Platform_OpenInShellFn_DefaultImpl;
-    platform_io.Platform_SetImeDataFn = Platform_SetImeDataFn_DefaultImpl;
-}
 
 //-----------------------------------------------------------------------------
 // [SECTION] METRICS/DEBUGGER WINDOW
@@ -22625,7 +22552,7 @@ void ImGui::DebugNodeTexture(ImTextureData* tex, int int_id, const ImFontAtlasRe
         Checkbox("Show used rect", &cfg->ShowTextureUsedRect);
         PushStyleVar(ImGuiStyleVar_ImageBorderSize, ImMax(1.0f, g.Style.ImageBorderSize));
         ImVec2 p = GetCursorScreenPos();
-        if (tex->Status == ImTextureStatus_WantDestroy || tex->Status == ImTextureStatus_Destroyed)
+        if (tex->WantDestroyNextFrame)
             Dummy(ImVec2((float)tex->Width, (float)tex->Height));
         else
             ImageWithBg(tex->GetTexRef(), ImVec2((float)tex->Width, (float)tex->Height), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
