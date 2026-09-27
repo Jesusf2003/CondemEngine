@@ -16,10 +16,10 @@
 //     Con viewports (ImGuiConfigFlags_ViewportsEnable) una ventana flotante
 //     puede salir de la ventana principal como ventana del sistema hija de
 //     ella; sin viewports nunca sale del área de trabajo
-//   - layout: si el layout activo tiene la ventana asignada a una región
-//     (left, right, top, bottom, center), el layout decide su posición.
-//     Al minimizarla se convierte en una pestaña de la barra de su borde,
-//     y se puede sacar o meter en el layout arrastrándola (ver layout.h)
+//   - acoplamiento: si la ventana está en el árbol del dock activo, el dock
+//     decide su posición y tamaño y la muestra como una pestaña de su hoja.
+//     Se acopla arrastrándola sobre los destinos del dock y se saca
+//     arrastrando su pestaña (ver dock.h)
 
 #pragma once
 
@@ -28,8 +28,7 @@
 #include <string>
 #include <vector>
 
-class editor_layout;
-enum layout_region : int;
+class editor_dock;
 
 // Opciones de ventana (combinables)
 enum
@@ -42,11 +41,10 @@ enum
     WND_SNAP            = 1 << 5,   // se acopla a otras ventanas y a los bordes
     WND_MIN_CONTENT     = 1 << 6,   // tamaño mínimo = lo que ocupa el contenido
     WND_MAX_CONTENT     = 1 << 7,   // tamaño máximo = lo que ocupa el contenido
-    WND_COVER_LAYOUT    = 1 << 8,   // acoplada: cubre todo su hueco del layout (ignora el máximo)
     WND_MAXIMIZABLE     = 1 << 9,   // botón de maximizar/restaurar
 
     WND_DEFAULT         = WND_MINIMIZABLE | WND_MAXIMIZABLE | WND_MOVABLE | WND_RESIZABLE | WND_TITLEBAR
-                        | WND_SNAP | WND_COVER_LAYOUT
+                        | WND_SNAP
 };
 
 // Rectángulo en coordenadas de pantalla; min/max se indexan por eje (0 = x, 1 = y)
@@ -76,19 +74,20 @@ public:
     void        toggle();
     void        focus();
     bool        is_open() const         { return open; }
+    bool        is_focused() const      { return focused; }
+    bool        is_docked() const;
 
     void        minimize();
     bool        is_minimized() const    { return minimized; }
-    // Flotante: queda solo su barra de título.
-    // Acoplada en left/right/top/bottom: pasa a la barra de su borde del layout.
-    // El centro no se minimiza.
+    // Flotante: queda solo su barra de título. Acoplada no se minimiza (se
+    // cierra o se cambia de pestaña).
 
     void        maximize();
     void        toggle_maximize();
     bool        is_maximized() const    { return maximized; }
     bool        can_maximize() const;
-    // Ocupa toda el área de trabajo de la ventana principal, encima del
-    // layout. No se puede si su tamaño máximo es menor que el área.
+    // Ocupa toda el área de trabajo de la ventana principal, encima de las
+    // acopladas. No se puede si su tamaño máximo es menor que el área.
 
     void        restore();
     // Como en Windows: si está minimizada vuelve a su estado anterior; si
@@ -107,19 +106,14 @@ public:
     void        set_resizable(bool enable)      { set_option(WND_RESIZABLE, enable); }
     void        set_titlebar(bool enable)       { set_option(WND_TITLEBAR, enable); }
     void        set_snap(bool enable)           { set_option(WND_SNAP, enable); }
-    void        set_cover_layout(bool enable)   { set_option(WND_COVER_LAYOUT, enable); }
 
     //------------------------------------------------------------------
     // Posición
 
-    void        set_default_dock(layout_region region);
-    layout_region get_default_dock() const;
-    // Región del layout donde va la ventana por defecto (LAYOUT_FLOAT = ninguna):
-    // al iniciar el editor y al volver a mostrarla si no está acoplada.
-
     void        set_default_rect(float x, float y, float w, float h);
     // Posición y tamaño iniciales, en fracciones (0..1) del área de trabajo.
-    // Solo se usa si editor.ini no tiene guardada la ventana.
+    // Solo se usa si editor.ini no tiene guardada la ventana. El tamaño
+    // también decide cuánto ocupa al acoplarla si nunca ha sido flotante.
 
     //------------------------------------------------------------------
     // Límites de tamaño
@@ -129,8 +123,8 @@ public:
     //   2. por contenido: opciones WND_MIN_CONTENT / WND_MAX_CONTENT, que usan
     //      el tamaño que necesita el contenido (como el auto-ajuste de ImGui)
     //   3. on_size_limits(): cada clase de ventana puede ajustarlos a su gusto
-    // Se aplican a las ventanas flotantes y también a las acopladas: una
-    // región del layout no crece más allá de lo que admiten sus ventanas.
+    // Se aplican a las ventanas flotantes. Acopladas, el mínimo limita cuánto
+    // se puede achicar su hoja del dock.
 
     void        set_min_size(float w, float h);
     // Tamaño mínimo en px a escala 1.0 (por defecto ed_style.window_min_size).
@@ -141,13 +135,14 @@ public:
     void        get_size_limits(ImVec2& min, ImVec2& max) const;
     // Límites efectivos en px reales (ya escalados). max usa FLT_MAX sin límite.
 
-    void        get_layout_limits(ImVec2& min, ImVec2& max) const;
-    // Límites que usa el layout cuando está acoplada: con WND_COVER_LAYOUT
-    // (activa por defecto) no hay máximo y la ventana cubre todo su hueco;
-    // sin ella respeta su máximo y deja libre el resto de la región.
-
     ImVec2      get_content_size() const    { return content_size; }
     // Tamaño de ventana que necesita el contenido (0 hasta el primer frame).
+
+    ImVec2      get_float_size() const      { return float_size; }
+    // Último tamaño como flotante (0 si nunca lo ha sido).
+
+    ImVec2      get_default_size() const    { return default_size; }
+    // Tamaño inicial en fracciones del área de trabajo (set_default_rect).
 
     const char* get_name() const        { return name.c_str(); }
     const char* get_title() const       { return title.c_str(); }
@@ -163,12 +158,12 @@ public:
     // Configura ImGui para el sistema de ventanas y registra los comandos.
 
     static void             draw_all();
-    // Coloca las ventanas del layout activo y dibuja todas las abiertas.
+    // Dibuja el dock activo y todas las ventanas abiertas.
 
     static editor_window*   find(const char* name);
 
 protected:
-    friend class editor_layout;     // acopla, minimiza en la barra y saca ventanas
+    friend class editor_dock;       // saca una ventana arrastrando su pestaña
 
     virtual void    on_draw() = 0;          // contenido de la ventana
     virtual void    on_show() {}
@@ -180,7 +175,10 @@ protected:
     // Ajuste final de los límites de tamaño (px reales), ver get_size_limits().
 
 private:
-    void            draw(editor_layout* layout);
+    void            draw(editor_dock* dock);
+    void            begin_float_drag(const ImVec2& grab);
+    // La ventana acaba de salir del dock: flotante bajo el ratón, que la
+    // mueve agarrada por grab (px desde su esquina superior izquierda).
     ImGuiWindowFlags build_flags() const;
     bool            is_floating() const;
     bool            allows(unsigned option) const;
@@ -217,11 +215,11 @@ private:
     ImVec2          content_size;   // tamaño que necesita el contenido (px reales)
 
     window_rect     rect;           // posición en pantalla del último frame
-    int             dock_region;    // layout_region en el frame actual (0 = flotante)
-    int             default_dock;   // layout_region por defecto (0 = ninguna)
+    bool            docked;         // en el frame actual la coloca el dock
     ImVec2          float_size;     // último tamaño como flotante (0 = sin usar)
     ImVec2          request_size;   // tamaño a aplicar en el próximo frame (0 = nada)
     ImVec2          request_pos;    // posición a aplicar en el próximo frame (FLT_MAX = nada)
     ImVec2          restore_pos;    // posición como flotante antes de maximizar
-    mutable bool    dock_resizing;  // el usuario arrastra el borde interior (lo marca snap_resize)
+    bool            drag_start;     // empezar a moverla con el ratón (begin_float_drag)
+    ImVec2          drag_offset;
 };

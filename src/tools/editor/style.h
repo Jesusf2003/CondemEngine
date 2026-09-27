@@ -52,9 +52,17 @@ public:
     ImVec4  caption_close_hovered;  // botón de cerrar, rojo como en Windows
     ImVec4  caption_close_active;
 
-    ImVec4  bar_bg;                 // barra de ventanas minimizadas del layout
-    ImVec4  drop_zone;              // zonas donde se puede soltar una ventana
     ImVec4  drop_preview;           // vista previa de dónde quedará la ventana
+
+    // consola, con la paleta de la consola de Quake
+    ImVec4  console_bg_top;         // degradado del fondo (conback)
+    ImVec4  console_bg_bottom;
+    ImVec4  console_text;           // texto normal
+    ImVec4  console_highlight;      // texto resaltado ('\1'/'\2'), la mitad dorada de la fuente
+    ImVec4  console_input;          // eco de lo escrito en la consola ("]comando")
+    ImVec4  console_warning;        // líneas con "warning"/"aviso"
+    ImVec4  console_error;          // líneas con "error"
+    ImVec4  console_version;        // versión en la esquina inferior derecha
 
     //------------------------------------------------------------------
     // Medidas (px a escala 1.0)
@@ -78,13 +86,12 @@ public:
     float   snap_resize;            // distancia para acoplar un borde al redimensionar
 
     //------------------------------------------------------------------
-    // Layout de la capa principal (ver layout.cpp)
+    // Acoplamiento (ver dock.cpp)
 
-    float   layout_min_region;      // grosor mínimo de left/right/top/bottom
-    float   layout_min_center;      // tamaño mínimo que se reserva al centro
-    float   layout_bar_padding;     // margen del texto en las pestañas de la barra
-    float   layout_drop_edge;       // distancia del cursor al borde que activa el acoplamiento
-    float   layout_drop_center;     // medio lado del cuadrado de soltar en el centro
+    float   dock_splitter;          // grosor del separador entre dos nodos
+    float   dock_min_leaf;          // lado mínimo de una hoja
+    float   dock_min_center;        // lado mínimo de la hoja central vacía
+    float   dock_drop_button;       // lado de los botones de destino al arrastrar
 
     //------------------------------------------------------------------
 

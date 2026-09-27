@@ -4,7 +4,7 @@
 #include "imgui_internal.h"     // antes que imgui.h: GImGui, ImGuiWindow, IDs de redimensionado
 
 #include "tools/editor/window.h"
-#include "tools/editor/layout.h"
+#include "tools/editor/dock.h"
 #include "tools/editor/style.h"
 
 #include "core/cmd.h"
@@ -33,9 +33,9 @@ editor_window::editor_window(const char* name, const char* title, unsigned optio
     default_pos(0.05f, 0.05f), default_size(0.30f, 0.30f),
     min_size(ed_style.window_min_size), max_size(0, 0), content_size(0, 0),
     rect{ ImVec2(0, 0), ImVec2(0, 0) },
-    dock_region(LAYOUT_FLOAT), default_dock(LAYOUT_FLOAT),
+    docked(false),
     float_size(0, 0), request_size(0, 0), request_pos(FLT_MAX, FLT_MAX), restore_pos(0, 0),
-    dock_resizing(false)
+    drag_start(false), drag_offset(0, 0)
 {
     // "###" + nombre: el ID de ImGui (y editor.ini) depende solo del nombre,
     // así se puede cambiar el título sin perder la posición guardada. ImGui
@@ -51,6 +51,10 @@ editor_window::editor_window(const char* name, const char* title, unsigned optio
 */
 editor_window::~editor_window()
 {
+    // que el dock no se quede con un puntero a una ventana destruida
+    editor_dock* dock = editor_dock::active();
+    if (dock && dock->node_of(this))
+        dock->undock(this);
     windex.erase(std::find(windex.begin(), windex.end(), this));
 }
 
@@ -74,6 +78,9 @@ void editor_window::show()
         open = true;
         on_show();
     }
+    // acoplada: vuelve a su hoja como pestaña visible
+    if (editor_dock* dock = editor_dock::active())
+        dock->activate(this);
     request_focus = true;
 }
 
@@ -120,6 +127,8 @@ editor_window::focus
 void editor_window::focus()
 {
     request_focus = true;
+    if (editor_dock* dock = editor_dock::active())
+        dock->activate(this);
     if (minimized)
         restore();
 }
@@ -140,31 +149,28 @@ static bool Wnd_CanLeaveMain(void)
 
 /*
 ==================
-Wnd_Region
+editor_window::is_docked
 
-Región de la ventana en el layout activo
+En el árbol del dock activo (aunque esté oculta o en otra pestaña)
 ==================
 */
-static layout_region Wnd_Region(const editor_window* w)
+bool editor_window::is_docked() const
 {
-    const editor_layout* l = editor_layout::active();
-    return l ? l->region_of(w) : LAYOUT_FLOAT;
+    const editor_dock* dock = editor_dock::active();
+    return dock && dock->node_of(this);
 }
 
 /*
 ==================
 editor_window::minimize
 
-Flotante: queda solo su barra de título.
-Acoplada a un lado: deja de dibujarse y el layout la muestra en la barra
-de su borde. El centro no se minimiza. Si estaba maximizada, se restaura.
+Flotante: queda solo su barra de título. Acoplada no se minimiza: se cierra
+o se cambia de pestaña. Si estaba maximizada, se restaura.
 ==================
 */
 void editor_window::minimize()
 {
-    if (!allows(WND_MINIMIZABLE) || minimized)
-        return;
-    if (Wnd_Region(this) == LAYOUT_CENTER)
+    if (!allows(WND_MINIMIZABLE) || minimized || is_docked())
         return;
 
     if (maximized)
@@ -192,10 +198,7 @@ bool editor_window::can_maximize() const
         return false;
 
     ImVec2 lo, hi;
-    if (Wnd_Region(this) != LAYOUT_FLOAT)
-        get_layout_limits(lo, hi);
-    else
-        get_size_limits(lo, hi);
+    get_size_limits(lo, hi);
 
     const window_rect ws = workspace();
     return hi.x >= ws.width() && hi.y >= ws.height();
@@ -219,11 +222,11 @@ editor_window::toggle_maximize
 */
 void editor_window::toggle_maximize()
 {
-    const bool floating = (Wnd_Region(this) == LAYOUT_FLOAT);
+    const bool floating = is_floating();
 
     if (maximized)
     {
-        // vuelve a su tamaño normal: acoplada, a su hueco del layout;
+        // vuelve a su tamaño normal: acoplada, a su hoja del dock;
         // flotante, a la posición y tamaño que tenía
         maximized = false;
         if (floating)
@@ -255,7 +258,7 @@ void editor_window::restore()
     if (minimized)
     {
         minimized = false;
-        if (Wnd_Region(this) == LAYOUT_FLOAT && float_size.x > 0 && float_size.y > 0)
+        if (is_floating() && float_size.x > 0 && float_size.y > 0)
             request_size = float_size;
     }
     else if (maximized)
@@ -343,44 +346,17 @@ void editor_window::get_size_limits(ImVec2& min, ImVec2& max) const
 
 /*
 ==================
-editor_window::get_layout_limits
-==================
-*/
-void editor_window::get_layout_limits(ImVec2& min, ImVec2& max) const
-{
-    get_size_limits(min, max);
-    if (has_option(WND_COVER_LAYOUT))
-        max = ImVec2(FLT_MAX, FLT_MAX);
-}
-
-/*
-==================
 editor_window::is_floating / allows
 ==================
 */
 bool editor_window::is_floating() const
 {
-    return Wnd_Region(this) == LAYOUT_FLOAT;
+    return !is_docked();
 }
 
 bool editor_window::allows(unsigned option) const
 {
     return is_floating() || has_option(option);
-}
-
-/*
-==================
-editor_window::set_default_dock
-==================
-*/
-void editor_window::set_default_dock(layout_region region)
-{
-    default_dock = region;
-}
-
-layout_region editor_window::get_default_dock() const
-{
-    return (layout_region)default_dock;
 }
 
 /*
@@ -574,36 +550,6 @@ void editor_window::snap_resize(ImGuiSizeCallbackData* data) const
         r.max[axis] = r.min[axis] + data->DesiredSize[axis];
     }
 
-// acoplada: el layout dice qué bordes se mueven (el que da al centro y los
-// que están entre dos paneles) y hasta dónde, sin invadir otras regiones
-    if (dock_region != LAYOUT_FLOAT)
-    {
-        const editor_layout* l = editor_layout::active();
-        bool allowed[2][2] = {};
-        if (l)
-            l->resize_edges(this, allowed);
-
-        for (int axis = 0; axis < 2; axis++)
-        {
-            for (int side = 0; side < 2; side++)
-                edge[axis][side] = edge[axis][side] && allowed[axis][side];
-            if (!edge[axis][0] && !edge[axis][1])
-            {
-                // este eje no se puede redimensionar: se queda como estaba
-                r.min[axis] = data->Pos[axis];
-                r.max[axis] = data->Pos[axis] + data->CurrentSize[axis];
-            }
-            else
-                dock_resizing = true;
-        }
-
-        if (l)
-            l->constrain_resize(this, edge, r);
-        for (int axis = 0; axis < 2; axis++)
-            data->DesiredSize[axis] = r.max[axis] - r.min[axis];
-        return;
-    }
-
 // flotante: acoplamiento a bordes y límites de tamaño
     const window_rect field = workspace();
     const float snap = ed_style.scaled(ed_style.snap_resize);
@@ -653,31 +599,27 @@ void editor_window::snap_resize(ImGuiSizeCallbackData* data) const
 editor_window::draw
 ==================
 */
-void editor_window::draw(editor_layout* layout)
+void editor_window::draw(editor_dock* dock)
 {
     ImGuiContext& g = *GImGui;
     const window_rect field = workspace();
-    const window_rect* docked = layout ? layout->rect_of(this) : nullptr;
 
-    dock_region = layout ? layout->region_of(this) : LAYOUT_FLOAT;
-
-// acoplada y minimizada: la dibuja el layout como pestaña de su barra
-    if (docked && minimized && dock_region != LAYOUT_CENTER)
-    {
-        rect = { ImVec2(0, 0), ImVec2(0, 0) };
-        focused = false;
-        return;
-    }
+    // acoplada: el dock le da el rectángulo de su hoja (bajo las pestañas).
+    // Maximizada se dibuja encima de todo, fuera del dock
+    ImVec2 dock_min, dock_max;
+    const bool max_now = maximized && !minimized;
+    docked = !max_now && dock && dock->content_rect(this, dock_min, dock_max);
+    if (docked)
+        minimized = false;
 
     const bool float_minimized = !docked && minimized;     // solo la barra de título
-    const bool max_now = maximized && !minimized;
     const float title_height = ImGui::GetFrameHeight();     // igual que ImGuiWindow::TitleBarHeight
 
     ImGuiWindowFlags flags = build_flags();
 
     // límites de tamaño. Las acopladas miden exactamente lo que les da el
-    // layout (que ya respeta sus límites), así nunca cubren otra región.
-    // Maximizada o minimizada, el tamaño lo decide su estado
+    // dock (que ya respeta su mínimo). Maximizada o minimizada, el tamaño lo
+    // decide su estado
     ImVec2 size_min, size_max;
     get_size_limits(size_min, size_max);
     if (docked || max_now || float_minimized)
@@ -686,12 +628,11 @@ void editor_window::draw(editor_layout* layout)
         size_max = ImVec2(FLT_MAX, FLT_MAX);
     }
     ImGui::SetNextWindowSizeConstraints(size_min, size_max, size_callback, this);
-    dock_resizing = false;
 
     if (max_now)
     {
-// maximizada: toda el área de trabajo de la ventana principal, encima del
-// layout. No se mueve ni se redimensiona hasta que se restaura
+// maximizada: toda el área de trabajo de la ventana principal, encima de
+// las acopladas. No se mueve ni se redimensiona hasta que se restaura
         ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
         ImGui::SetNextWindowPos(field.min, ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(field.width(), field.height()), ImGuiCond_Always);
@@ -699,14 +640,14 @@ void editor_window::draw(editor_layout* layout)
     }
     else if (docked)
     {
-// acoplada: el layout decide posición y tamaño. No se trae al frente al
-// hacer clic para que las ventanas flotantes queden siempre encima.
-// Se puede arrastrar por la barra de título: el layout la saca al pasar
-// el umbral de arrastre (ver editor_layout::update_drag)
+// acoplada: el dock decide posición y tamaño; el título es su pestaña.
+// No se trae al frente al hacer clic para que las flotantes queden encima.
+// Se saca arrastrando la pestaña (ver editor_dock::draw_tabbar)
         ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
-        ImGui::SetNextWindowPos(docked->min, ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(docked->width(), docked->height()), ImGuiCond_Always);
-        flags |= ImGuiWindowFlags_NoBringToFrontOnFocus;
+        ImGui::SetNextWindowPos(dock_min, ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(dock_max.x - dock_min.x, dock_max.y - dock_min.y), ImGuiCond_Always);
+        flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize
+               | ImGuiWindowFlags_NoBringToFrontOnFocus;
     }
     else
     {
@@ -736,7 +677,7 @@ void editor_window::draw(editor_layout* layout)
                 ImGui::SetNextWindowSize(ImVec2(target.width(), target.height()), ImGuiCond_Always);
         }
 
-        // posición y tamaño pedidos (al sacarla del layout o al restaurarla)
+        // posición y tamaño pedidos (al sacarla del dock o al restaurarla)
         if (request_pos.x != FLT_MAX)
         {
             ImGui::SetNextWindowPos(request_pos, ImGuiCond_Always);
@@ -762,15 +703,30 @@ void editor_window::draw(editor_layout* layout)
         request_focus = false;
     }
 
-    // el tamaño mínimo global del estilo haría que una acoplada en un hueco
-    // pequeño se saliera de él y tapara la región vecina, y no dejaría que
-    // una minimizada quede en solo la barra de título
+    // el tamaño mínimo global del estilo haría que una acoplada en una hoja
+    // pequeña se saliera de ella y tapara la vecina, y no dejaría que una
+    // minimizada quede en solo la barra de título
     const bool no_min_size = docked || float_minimized;
     if (no_min_size)
         ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
+    if (docked)
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     const bool visible = ImGui::Begin(imgui_id.c_str(), nullptr, flags);
+    if (docked)
+        ImGui::PopStyleVar();
     if (no_min_size)
         ImGui::PopStyleVar();
+
+    if (docked)
+        ImGui::BringWindowToDisplayBack(ImGui::GetCurrentWindow());    // detrás de las flotantes
+
+    // recién sacada del dock: ImGui la mueve con el ratón, agarrada por drag_offset
+    if (drag_start && !docked)
+    {
+        ImGui::StartMouseMovingWindow(ImGui::GetCurrentWindow());
+        g.ActiveIdClickOffset = drag_offset;
+        drag_start = false;
+    }
 
     // tamaño que necesita el contenido (mismo cálculo que el auto-ajuste de ImGui)
     if (!minimized)
@@ -788,16 +744,13 @@ void editor_window::draw(editor_layout* layout)
     if (!docked && !minimized && !maximized)
         float_size = size;
 
-    // borde interior arrastrado: el layout ajusta el tamaño de la región
-    if (docked && dock_resizing && !max_now)
-        layout->resized(this, rect);
-
     const bool now_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     if (now_focused && !focused)
         on_focus();
     focused = now_focused;
 
-    draw_caption();
+    if (!docked)
+        draw_caption();
 
     if (visible && !float_minimized)
         on_draw();
@@ -915,7 +868,7 @@ void editor_window::draw_caption()
 
     const bool show_close = allows(WND_CLOSABLE);
     const bool show_max = can_maximize();
-    const bool show_min = allows(WND_MINIMIZABLE) && dock_region != LAYOUT_CENTER;
+    const bool show_min = allows(WND_MINIMIZABLE) && !is_docked();
 
     // la barra de título está fuera del recorte del contenido; los botones
     // van en la capa de menú, como los de ImGui, para no entrar en la navegación
@@ -982,25 +935,69 @@ void editor_window::draw_caption()
 
 /*
 ==================
+editor_window::begin_float_drag
+
+Queda flotante con un tamaño razonable y el punto agarrado dentro de su
+barra de título
+==================
+*/
+void editor_window::begin_float_drag(const ImVec2& grab)
+{
+    const window_rect ws = workspace();
+
+    ImVec2 fs = float_size;
+    if (fs.x <= 0 || fs.y <= 0)
+        fs = ImVec2(std::min(std::max(rect.width(), 1.0f), ws.width() * 0.4f),
+                    std::min(std::max(rect.height(), 1.0f), ws.height() * 0.4f));
+    ImVec2 lo, hi;
+    get_size_limits(lo, hi);
+    fs = ImVec2(std::clamp(fs.x, lo.x, hi.x), std::clamp(fs.y, lo.y, hi.y));
+
+    ImVec2 offset = grab;
+    offset.x = std::max(std::min(offset.x, fs.x - ed_style.scaled(24.0f)), ed_style.scaled(8.0f));
+
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    request_size = fs;
+    request_pos = ImVec2(mouse.x - offset.x, mouse.y - offset.y);
+    drag_offset = offset;
+    drag_start = true;
+    minimized = maximized = false;
+    open = true;
+}
+
+/*
+==================
 editor_window::draw_all
 ==================
 */
 void editor_window::draw_all()
 {
-    editor_layout* layout = editor_layout::active();
-    if (layout)
+    editor_dock* dock = editor_dock::active();
+    if (dock)
     {
-        layout->update_drag();          // antes de arrange: puede sacar o acoplar ventanas
-        layout->arrange(workspace());
-        layout->draw_bars();
+        const window_rect ws = workspace();
+        dock->begin_frame(ws.min, ImVec2(ws.width(), ws.height()));
     }
 
     for (editor_window* w : windex)
-        if (w->open)
-            w->draw(layout);
+    {
+        if (!w->open)
+            continue;
 
-    if (layout)
-        layout->draw_drop_zones();
+        // acoplada en una pestaña que no se ve (o en una hoja sin sitio)
+        ImVec2 dmin, dmax;
+        if (dock && !w->maximized && dock->node_of(w) && !dock->content_rect(w, dmin, dmax))
+        {
+            w->rect = { ImVec2(0, 0), ImVec2(0, 0) };
+            w->focused = false;
+            w->docked = true;
+            continue;
+        }
+        w->draw(dock);
+    }
+
+    if (dock)
+        dock->end_frame();
 }
 
 /*
@@ -1061,20 +1058,45 @@ Wnd_List_f
 */
 static void Wnd_List_f(void)
 {
-    editor_layout* layout = editor_layout::active();
     for (const editor_window* w : editor_window::windex)
     {
-        const editor_layout* owner = layout ? layout->owner_of(w) : nullptr;
-        char where[64];
-        if (owner && owner != layout)
-            snprintf(where, sizeof(where), "center.%s", editor_layout::region_name(owner->region_of(w)));
-        else
-            snprintf(where, sizeof(where), "%s", editor_layout::region_name(owner ? owner->region_of(w) : LAYOUT_FLOAT));
-        Con_Printf("  %-12s %-14s %s%s\n", w->get_name(), where,
+        Con_Printf("  %-12s %-10s %s%s%s\n", w->get_name(),
+            w->is_docked() ? "acoplada" : "flotante",
             w->is_open() ? "abierta" : "oculta",
-            w->is_minimized() ? ", minimizada" : "");
+            w->is_minimized() ? ", minimizada" : "",
+            w->is_maximized() ? ", maximizada" : "");
     }
     Con_Printf("%i window(s)\n", (int)editor_window::windex.size());
+}
+
+/*
+==================
+Wnd_State_f
+
+minimizewindow / maximizewindow / restorewindow <ventana>
+==================
+*/
+static void Wnd_State_f(void)
+{
+    if (Cmd_Argc() != 2)
+    {
+        Con_Printf("%s <name>\n", Cmd_Argv(0));
+        return;
+    }
+
+    editor_window* w = editor_window::find(Cmd_Argv(1));
+    if (!w)
+    {
+        Con_Printf("%s: window %s not found\n", Cmd_Argv(0), Cmd_Argv(1));
+        return;
+    }
+
+    if (!strcasecmp(Cmd_Argv(0), "minimizewindow"))
+        w->minimize();
+    else if (!strcasecmp(Cmd_Argv(0), "maximizewindow"))
+        w->maximize();
+    else
+        w->restore();
 }
 
 /*
@@ -1089,4 +1111,7 @@ void editor_window::init()
 
     Cmd_AddCommand("togglewindow", Wnd_Toggle_f);
     Cmd_AddCommand("windowlist", Wnd_List_f);
+    Cmd_AddCommand("minimizewindow", Wnd_State_f);
+    Cmd_AddCommand("maximizewindow", Wnd_State_f);
+    Cmd_AddCommand("restorewindow", Wnd_State_f);
 }

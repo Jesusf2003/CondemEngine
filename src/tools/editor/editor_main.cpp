@@ -13,7 +13,7 @@
 #include "sys/sys.h"
 #include "sys/sys_vid.h"
 
-#include "tools/editor/layout.h"
+#include "tools/editor/dock.h"
 #include "tools/editor/menubar.h"
 #include "tools/editor/style.h"
 #include "tools/editor/window.h"
@@ -416,15 +416,16 @@ int Editor_Main(void)
 
 // ventanas del editor
     editor_window::init();
-    editor_layout::init();
+    editor_dock::init();
     info_window     info(vk_device_properties.deviceName);
     console_window  console;
 
-// layout de la pantalla principal (editor.ini puede sobrescribirlo)
-    // cada ventana va a su región por defecto (consola abajo, info a la izquierda)
-    editor_layout   main_layout("main");
-    main_layout.dock_defaults();
-    editor_layout::set_active(&main_layout);
+// acoplamiento por defecto (editor.ini lo sobrescribe con el guardado):
+// la consola abajo a todo el ancho, info a la izquierda del hueco central
+    editor_dock     main_dock("main");
+    main_dock.dock(&console, nullptr, DOCK_BOTTOM, 0.30f);
+    main_dock.dock(&info, main_dock.central(), DOCK_LEFT, 0.22f);
+    editor_dock::set_active(&main_dock);
 
     editor_menubar  menubar;
 
@@ -459,7 +460,7 @@ int Editor_Main(void)
         VID_ImGui_NewFrame();
         ImGui::NewFrame();
 
-        menubar.draw(editor_layout::active());   // antes: reduce el área de trabajo
+        menubar.draw();         // antes: reduce el área de trabajo
         editor_window::draw_all();
 
         ImGui::Render();

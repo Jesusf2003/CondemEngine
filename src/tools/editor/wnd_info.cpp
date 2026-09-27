@@ -2,10 +2,13 @@
 
 #include "tools/editor/wnd_info.h"
 
-#include "tools/editor/layout.h"
+#include "tools/editor/style.h"
+#include "tools/editor/ui/ui.h"
 
 #include "common/common.h"
 #include "sys/sys.h"
+
+#include <cstdio>
 
 /*
 ==================
@@ -13,13 +16,27 @@ info_window
 ==================
 */
 info_window::info_window(const char* renderer) :
-    editor_window("info", ENGINE_NAME, WND_DEFAULT | WND_CLOSABLE | WND_MAX_CONTENT),
-    renderer(renderer)
+    editor_window("info", ENGINE_NAME, WND_DEFAULT | WND_CLOSABLE | WND_MAX_CONTENT)
 {
-    set_default_dock(LAYOUT_LEFT);
     set_default_rect(0.02f, 0.03f, 0.28f, 0.30f);
     // mínimo por código; el máximo es lo que ocupa su contenido (WND_MAX_CONTENT)
     set_min_size(200.0f, 120.0f);
+
+    root = ui_vbox::create({
+        ui_label::create("Hola mundo!"),
+        ui_separator::create(),
+        ui_property_card::create("Sistema")
+            ->property("Dear ImGui", IMGUI_VERSION)
+            ->property("Plataforma", Sys_PlatformName())
+            ->property("Render", std::string("Vulkan - ") + renderer)
+            ->property("Arquitectura", std::to_string(sizeof(void*) * 8) + " bits")
+            ->property("FPS", []
+            {
+                char fps[32];
+                snprintf(fps, sizeof(fps), "%.1f", ImGui::GetIO().Framerate);
+                return std::string(fps);
+            }),
+    });
 }
 
 /*
@@ -29,11 +46,5 @@ info_window::on_draw
 */
 void info_window::on_draw()
 {
-    ImGui::Text("Hola mundo!");
-    ImGui::Separator();
-    ImGui::Text("Dear ImGui %s", IMGUI_VERSION);
-    ImGui::Text("Plataforma: %s", Sys_PlatformName());
-    ImGui::Text("Render: Vulkan - %s", renderer.c_str());
-    ImGui::Text("Arquitectura: %d bits", (int)(sizeof(void*) * 8));
-    ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
+    root->draw();
 }

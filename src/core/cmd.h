@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <vector>
+
 //===========================================================================
 
 /*
@@ -64,6 +66,10 @@ bool Cmd_Exists(const char* cmd_name);
 const char* Cmd_CompleteCommand(const char* partial);
 // Intenta completar un comando parcial (autocompletado de la consola).
 // Devuelve nullptr si no hay coincidencias.
+
+void Cmd_CompleteCommandList(const char* partial, std::vector<const char*>& matches);
+// Añade a matches todos los comandos que empiezan por partial (sin distinguir
+// mayúsculas), para que la consola pueda listar los candidatos.
 
 int         Cmd_Argc(void);
 const char* Cmd_Argv(int arg);

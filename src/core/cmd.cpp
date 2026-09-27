@@ -502,6 +502,20 @@ const char* Cmd_CompleteCommand(const char* partial)
 
 /*
 ============
+Cmd_CompleteCommandList
+============
+*/
+void Cmd_CompleteCommandList(const char* partial, std::vector<const char*>& matches)
+{
+    size_t len = strlen(partial);
+
+    for (const cmd_function_t& cmd : cmd_functions)
+        if (!strncasecmp(partial, cmd.name, len))
+            matches.push_back(cmd.name);
+}
+
+/*
+============
 Cmd_ExecuteString
 
 Una línea completa ha sido separada, así que se intenta ejecutar

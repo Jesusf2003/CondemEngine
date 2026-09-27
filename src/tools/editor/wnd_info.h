@@ -4,6 +4,10 @@
 
 #include "tools/editor/window.h"
 
+#include <memory>
+
+class ui_node;
+
 class info_window : public editor_window
 {
 public:
@@ -13,5 +17,5 @@ protected:
     void on_draw() override;
 
 private:
-    std::string renderer;   // nombre de la GPU
+    std::shared_ptr<ui_node> root;
 };

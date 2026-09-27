@@ -96,14 +96,23 @@ set(ENGINE_SRC
 )
 
 set(EDITOR_SRC
+    src/tools/editor/dock.cpp
+    src/tools/editor/dock.h
     src/tools/editor/editor_main.cpp
     src/tools/editor/editor.h
-    src/tools/editor/layout.cpp
-    src/tools/editor/layout.h
     src/tools/editor/menubar.cpp
     src/tools/editor/menubar.h
     src/tools/editor/style.cpp
     src/tools/editor/style.h
+    src/tools/editor/ui/ui.h
+    src/tools/editor/ui/ui_controls.cpp
+    src/tools/editor/ui/ui_controls.h
+    src/tools/editor/ui/ui_layout.cpp
+    src/tools/editor/ui/ui_layout.h
+    src/tools/editor/ui/ui_node.cpp
+    src/tools/editor/ui/ui_node.h
+    src/tools/editor/ui/ui_property_card.cpp
+    src/tools/editor/ui/ui_property_card.h
     src/tools/editor/window.cpp
     src/tools/editor/window.h
     src/tools/editor/wnd_console.cpp

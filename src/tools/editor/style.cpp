@@ -48,9 +48,16 @@ editor_style::editor_style()
     caption_close_hovered   = Style_Color(196,  43,  28);
     caption_close_active    = Style_Color(148,  34,  24);
 
-    bar_bg              = Style_Color( 30,  30,  33);
-    drop_zone           = Style_Color(214, 140,  38, 0.10f);
     drop_preview        = Style_Color(214, 140,  38, 0.30f);
+
+    console_bg_top      = Style_Color( 24,  19,  15);
+    console_bg_bottom   = Style_Color( 52,  37,  25);
+    console_text        = Style_Color(214, 208, 198);
+    console_highlight   = Style_Color(214, 160,  88);
+    console_input       = Style_Color(236, 232, 224);
+    console_warning     = Style_Color(230, 200,  60);
+    console_error       = Style_Color(240,  80,  70);
+    console_version     = Style_Color(214, 160,  88, 0.70f);
 
     window_rounding     = 3.0f;
     window_border       = 1.0f;
@@ -67,11 +74,10 @@ editor_style::editor_style()
     snap_move           = 10.0f;
     snap_resize         = 8.0f;
 
-    layout_min_region   = 80.0f;
-    layout_min_center   = 160.0f;
-    layout_bar_padding  = 10.0f;
-    layout_drop_edge    = 16.0f;        // entre 10 y 20 px
-    layout_drop_center  = 48.0f;
+    dock_splitter       = 4.0f;
+    dock_min_leaf       = 64.0f;
+    dock_min_center     = 160.0f;
+    dock_drop_button    = 32.0f;
 
     scale               = 1.0f;
 }
@@ -154,6 +160,16 @@ void editor_style::apply(float dpi_scale)
     c[ImGuiCol_ResizeGrip]              = ImVec4(accent.x, accent.y, accent.z, 0.25f);
     c[ImGuiCol_ResizeGripHovered]       = accent_hovered;
     c[ImGuiCol_ResizeGripActive]        = accent_active;
+
+    // pestañas del dock: la seleccionada con el fondo de la ventana, como
+    // si la ventana saliera de ella, y una línea del color de acento
+    c[ImGuiCol_Tab]                     = frame_bg;
+    c[ImGuiCol_TabHovered]              = frame_bg_active;
+    c[ImGuiCol_TabSelected]             = window_bg;
+    c[ImGuiCol_TabSelectedOverline]     = accent;
+    c[ImGuiCol_TabDimmed]               = frame_bg;
+    c[ImGuiCol_TabDimmedSelected]       = window_bg;
+    c[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(accent.x, accent.y, accent.z, 0.50f);
 
     c[ImGuiCol_TextSelectedBg]          = ImVec4(accent.x, accent.y, accent.z, 0.35f);
     c[ImGuiCol_NavCursor]               = accent;
