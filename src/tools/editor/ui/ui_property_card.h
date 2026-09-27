@@ -7,6 +7,12 @@
 //   ui_property_card::create("Sistema")
 //       ->property("Plataforma", Sys_PlatformName())
 //       ->property("FPS", [] { return std::to_string(fps); });
+//
+// Por defecto llena el ancho disponible (width = -FLT_MIN): la columna de
+// valores se queda con lo que sobra y los que no caben se recortan con "...".
+// A la ventana le informa del ancho de su contenido, no del disponible, así
+// WND_MIN_CONTENT / WND_MAX_CONTENT siguen midiendo lo que necesita.
+// width(0) = del ancho de su contenido; width(px) = fijo.
 
 #pragma once
 

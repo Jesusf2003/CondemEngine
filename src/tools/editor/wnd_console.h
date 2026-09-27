@@ -14,6 +14,8 @@
 #include "tools/editor/window.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 class ui_border_pane;
 

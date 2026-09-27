@@ -149,6 +149,12 @@ public:
     // espacio entre celdas; por defecto, el de ImGui (CellPadding)
     ptr borders(bool v = true)      { grid_borders = v; return self(); }
     ptr stretch(bool v = true)      { grid_stretch = v; return self(); }
+    ptr stretch_column(int column)  { stretch_col = column; return self(); }
+    // solo esa columna se queda con el ancho que sobra; las demás, según su
+    // contenido (-1 = ninguna). Necesita un ancho (width) para el grid
+    //
+    // Con width < 0 el grid llena el ancho disponible pero informa a la
+    // ventana de su ancho ideal (el de su contenido): así no crece con ella
 
 protected:
     ui_grid_pane() = default;
@@ -166,6 +172,7 @@ protected:
     std::vector<cell>   cells;          // ordenadas por fila y columna
     std::vector<float>  widths;
     int                 num_columns = 0;
+    int                 stretch_col = -1;
     ImVec2              cell_gap = ImVec2(-1, -1);
     bool                grid_borders = false;
     bool                grid_stretch = false;

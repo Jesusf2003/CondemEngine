@@ -2,8 +2,10 @@
 
 #include "tools/editor/ui/ui_controls.h"
 
-#include "imgui_internal.h"     // SeparatorEx
+#include "imgui_internal.h"     // SeparatorEx, RenderTextEllipsis
 #include "misc/cpp/imgui_stdlib.h"
+
+#include <algorithm>
 
 /*
 ==================
@@ -20,7 +22,34 @@ void ui_label::render()
     if (colored)
         ImGui::PushStyleColor(ImGuiCol_Text, label_color);
 
-    if (label_wrap)
+    const ImVec2 text_size = label_ellipsis ? ImGui::CalcTextSize(text.c_str(), text.c_str() + text.size()) : ImVec2(0, 0);
+    const float max_w = props.width > 0 ? props.width : ImGui::GetContentRegionAvail().x;
+
+    if (label_ellipsis && !label_wrap && text_size.x > max_w && max_w > 0)
+    {
+        // como TextUnformatted pero de ancho max_w: el contenido declara el
+        // ancho completo (CursorMaxPos/IdealMaxPos) para que el auto-ajuste
+        // de la ventana o de la columna de una tabla lo sigan viendo
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        const ImVec2 pos(window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+        const ImVec2 size(max_w, text_size.y);
+
+        window->DC.CursorMaxPos.x = std::max(window->DC.CursorMaxPos.x, pos.x + text_size.x);
+        window->DC.IdealMaxPos.x = std::max(window->DC.IdealMaxPos.x, pos.x + text_size.x);
+        const float backup_max_x = window->DC.CursorMaxPos.x;
+        ImGui::ItemSize(size, 0.0f);
+        window->DC.CursorMaxPos.x = backup_max_x;
+
+        const ImRect bb(pos, ImVec2(pos.x + size.x, pos.y + size.y));
+        if (ImGui::ItemAdd(bb, 0))
+        {
+            ImGui::RenderTextEllipsis(window->DrawList, bb.Min, bb.Max, bb.Max.x,
+                text.c_str(), text.c_str() + text.size(), &text_size);
+            if (props.tooltip.empty() && ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", text.c_str());
+        }
+    }
+    else if (label_wrap)
     {
         ImGui::PushTextWrapPos(props.width > 0 ? ImGui::GetCursorPosX() + props.width : 0.0f);
         ImGui::TextUnformatted(text.c_str(), text.c_str() + text.size());

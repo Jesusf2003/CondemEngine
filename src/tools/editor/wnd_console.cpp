@@ -61,6 +61,15 @@ static ImVec4 Con_AnsiColor(int index, bool bright)
     return ImVec4(rgb[index][0] * k, rgb[index][1] * k, rgb[index][2] * k, 1.0f);
 }
 
+// letras iniciales que coinciden sin distinguir mayúsculas
+static size_t Con_MatchLength(const char* a, const char* b)
+{
+    size_t i = 0;
+    while (a[i] && b[i] && tolower((unsigned char)a[i]) == tolower((unsigned char)b[i]))
+        i++;
+    return i;
+}
+
 static bool Con_Contains(const std::string& text, const char* word)
 {
     auto it = std::search(text.begin(), text.end(), word, word + strlen(word),
@@ -191,13 +200,12 @@ static bool Con_IsBar(const std::string& plain)
 /*
 ==================
 Con_DrawLine
+
+Dibuja una línea ya separada por Con_ParseLine
 ==================
 */
-static void Con_DrawLine(const std::string& line)
+static void Con_DrawLine(const std::string& plain, const std::vector<con_segment>& segments)
 {
-    std::vector<con_segment> segments;
-    const std::string plain = Con_ParseLine(line, segments);
-
     if (Con_IsBar(plain))
     {
         // ╞══════╡ dorado, del ancho de los caracteres
@@ -206,12 +214,13 @@ static void Con_DrawLine(const std::string& line)
         const ImVec2    p = ImGui::GetCursorScreenPos();
         const float     w = char_w * plain.size();
         const float     y = p.y + h * 0.5f;
+        const float     cap = ed_style.scaled(3.0f);     // lado de los remates
         const ImU32     col = ImGui::GetColorU32(ed_style.console_highlight);
         ImDrawList*     dl = ImGui::GetWindowDrawList();
 
-        dl->AddLine(ImVec2(p.x + 2, y), ImVec2(p.x + w - 2, y), col, 2.0f);
-        dl->AddRectFilled(ImVec2(p.x, y - 3), ImVec2(p.x + 3, y + 3), col);
-        dl->AddRectFilled(ImVec2(p.x + w - 3, y - 3), ImVec2(p.x + w, y + 3), col);
+        dl->AddLine(ImVec2(p.x + cap * 0.5f, y), ImVec2(p.x + w - cap * 0.5f, y), col, ed_style.scaled(2.0f));
+        dl->AddRectFilled(ImVec2(p.x, y - cap), ImVec2(p.x + cap, y + cap), col);
+        dl->AddRectFilled(ImVec2(p.x + w - cap, y - cap), ImVec2(p.x + w, y + cap), col);
         ImGui::Dummy(ImVec2(w, h));
         return;
     }
@@ -261,19 +270,7 @@ console_window::console_window() :
     set_default_rect(0.0f, 0.60f, 1.0f, 0.40f);
     set_min_size(240.0f, 120.0f);
 
-    auto toolbar = ui_hbox::create({
-        ui_button::create("Limpiar")->compact()->on_click([] { Con_Clear(); }),
-        ui_button::create("Copiar")->compact()->on_click([this] { copy_request = true; }),
-        ui_popup_button::create("Opciones")->compact()->add(
-            ui_checkbox::create("Auto-scroll")->bind(&auto_scroll)),
-        ui_text_input::create("filtro (\"incl,-excl\")")
-            ->bind(filter.InputBuf, sizeof(filter.InputBuf))
-            ->on_change([this](const char*) { filter.Build(); })
-            ->width(-FLT_MIN),
-    });
-
     root = ui_border_pane::create()
-        ->top(ui_vbox::create({ toolbar, ui_separator::create() }))
         ->center(ui_custom::create([this] { draw_log(); }))
         ->region_flags(UI_CENTER, ImGuiWindowFlags_HorizontalScrollbar)
         ->bottom(ui_custom::create([this] { draw_input(); }));
@@ -329,13 +326,8 @@ void console_window::complete(ImGuiInputTextCallbackData* data)
     std::vector<const char*> candidates;
     Cmd_CompleteCommandList(word.c_str(), candidates);
     for (cvar_t* var = cvar_vars; var; var = var->next)
-    {
-        size_t i = 0;
-        while (i < word.size() && var->name[i] && tolower((unsigned char)var->name[i]) == tolower((unsigned char)word[i]))
-            i++;
-        if (i == word.size())
+        if (Con_MatchLength(var->name, word.c_str()) == word.size())
             candidates.push_back(var->name);
-    }
 
     if (candidates.empty())
         return;
@@ -343,12 +335,7 @@ void console_window::complete(ImGuiInputTextCallbackData* data)
     // parte común a todos los candidatos
     size_t match_len = strlen(candidates[0]);
     for (const char* c : candidates)
-    {
-        size_t i = 0;
-        while (i < match_len && c[i] && tolower((unsigned char)c[i]) == tolower((unsigned char)candidates[0][i]))
-            i++;
-        match_len = i;
-    }
+        match_len = std::min(match_len, Con_MatchLength(c, candidates[0]));
 
     const int start = (int)(word_start - data->Buf);
     data->DeleteChars(start, (int)(word_end - word_start));
@@ -463,15 +450,15 @@ void console_window::draw_log()
     if (copy)
         ImGui::LogToClipboard();
 
+    std::vector<con_segment> segments;      // se reutiliza para todas las líneas
     if (filter.IsActive() || copy)
     {
         // con filtro no se sabe la altura total; al copiar hacen falta todas
-        std::vector<con_segment> segments;
         for (const std::string& line : lines)
         {
             const std::string plain = Con_ParseLine(line, segments);
             if (filter.PassFilter(plain.c_str(), plain.c_str() + plain.size()))
-                Con_DrawLine(line);
+                Con_DrawLine(plain, segments);
         }
     }
     else
@@ -480,7 +467,10 @@ void console_window::draw_log()
         clipper.Begin((int)lines.size());
         while (clipper.Step())
             for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++)
-                Con_DrawLine(lines[i]);
+            {
+                const std::string plain = Con_ParseLine(lines[i], segments);
+                Con_DrawLine(plain, segments);
+            }
     }
 
     if (copy)
@@ -518,8 +508,8 @@ void console_window::draw_log()
     {
         const char* version = ENGINE_NAME " " ENGINE_VERSION;
         const ImVec2 size = ImGui::CalcTextSize(version);
-        const float y = view.Max.y - size.y - 2.0f - (at_bottom ? 0.0f : line_h);
-        dl->AddText(ImVec2(view.Max.x - size.x - 8.0f, y), ImGui::GetColorU32(ed_style.console_version), version);
+        const float y = view.Max.y - size.y - ed_style.scaled(2.0f) - (at_bottom ? 0.0f : line_h);
+        dl->AddText(ImVec2(view.Max.x - size.x - ed_style.scaled(8.0f), y), ImGui::GetColorU32(ed_style.console_version), version);
     }
     dl->ChannelsMerge();
 }

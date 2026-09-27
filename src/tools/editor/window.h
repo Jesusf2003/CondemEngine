@@ -29,6 +29,7 @@
 #include <vector>
 
 class editor_dock;
+struct ImGuiSettingsHandler;
 
 // Opciones de ventana (combinables)
 enum
@@ -40,7 +41,8 @@ enum
     WND_TITLEBAR        = 1 << 4,
     WND_SNAP            = 1 << 5,   // se acopla a otras ventanas y a los bordes
     WND_MIN_CONTENT     = 1 << 6,   // tamaño mínimo = lo que ocupa el contenido
-    WND_MAX_CONTENT     = 1 << 7,   // tamaño máximo = lo que ocupa el contenido
+    WND_MAX_CONTENT     = 1 << 7,   // se ajusta a lo que ocupa el contenido; si es
+                                    // redimensionable, el usuario puede agrandarla
     WND_MAXIMIZABLE     = 1 << 9,   // botón de maximizar/restaurar
 
     WND_DEFAULT         = WND_MINIMIZABLE | WND_MAXIMIZABLE | WND_MOVABLE | WND_RESIZABLE | WND_TITLEBAR
@@ -124,7 +126,13 @@ public:
     //      el tamaño que necesita el contenido (como el auto-ajuste de ImGui)
     //   3. on_size_limits(): cada clase de ventana puede ajustarlos a su gusto
     // Se aplican a las ventanas flotantes. Acopladas, el mínimo limita cuánto
-    // se puede achicar su hoja del dock.
+    // se puede achicar su hoja del dock y el máximo cuánto la agranda el dock.
+    //
+    // WND_MAX_CONTENT en una ventana que se puede redimensionar (flotante
+    // siempre; acoplada, con WND_RESIZABLE) no es un tope: es el tamaño al que
+    // se ajusta hasta que el usuario la redimensiona (el borde flotante o el
+    // separador del dock). Entonces solo la limita el máximo por código.
+    // fit_to_content() (o el comando fitwindow) la vuelve a ajustar.
 
     void        set_min_size(float w, float h);
     // Tamaño mínimo en px a escala 1.0 (por defecto ed_style.window_min_size).
@@ -132,8 +140,14 @@ public:
     void        set_max_size(float w, float h);
     // Tamaño máximo en px a escala 1.0; 0 = sin límite en ese eje (por defecto).
 
-    void        get_size_limits(ImVec2& min, ImVec2& max) const;
+    void        get_size_limits(ImVec2& min, ImVec2& max, bool fit = false) const;
     // Límites efectivos en px reales (ya escalados). max usa FLT_MAX sin límite.
+    // fit = false: los que no se pueden pasar; fit = true: con el tamaño de
+    // ajuste (WND_MAX_CONTENT aunque sea redimensionable).
+
+    void        fit_to_content();
+    bool        is_user_sized() const   { return user_sized; }
+    // Flotante redimensionada por el usuario: ya no se ajusta al contenido.
 
     ImVec2      get_content_size() const    { return content_size; }
     // Tamaño de ventana que necesita el contenido (0 hasta el primer frame).
@@ -194,7 +208,12 @@ private:
     float           find_closest(int axis, float v, const window_rect& self, const window_rect& field, float snap) const;
     bool            snap_move(window_rect& r, const window_rect& field) const;
     static void     size_callback(ImGuiSizeCallbackData* data);
-    void            snap_resize(ImGuiSizeCallbackData* data) const;
+
+    // editor.ini
+    static void*    settings_read_open(ImGuiContext*, ImGuiSettingsHandler*, const char* name);
+    static void     settings_read_line(ImGuiContext*, ImGuiSettingsHandler*, void* entry, const char* line);
+    static void     settings_write_all(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuffer* buf);
+    void            snap_resize(ImGuiSizeCallbackData* data);
     static void     clamp_to_field(window_rect& r, const window_rect& field);
 
     std::string     name;           // identificador (comandos, editor.ini)
@@ -213,6 +232,7 @@ private:
     ImVec2          min_size;       // px a escala 1.0
     ImVec2          max_size;       // px a escala 1.0 (0 = sin límite)
     ImVec2          content_size;   // tamaño que necesita el contenido (px reales)
+    bool            user_sized;     // flotante redimensionada por el usuario (editor.ini)
 
     window_rect     rect;           // posición en pantalla del último frame
     bool            docked;         // en el frame actual la coloca el dock

@@ -35,6 +35,10 @@ public:
     // salto de línea al ancho del nodo (width) o al borde de la ventana
     ptr align_to_frame(bool v = true)       { label_align = v; return self(); }
     // alineado verticalmente con botones y campos en un ui_hbox
+    ptr ellipsis(bool v = true)             { label_ellipsis = v; return self(); }
+    // si no cabe en el ancho del nodo (width) o el disponible, se recorta con
+    // "..." y el texto completo sale en el tooltip. Sigue informando de su
+    // ancho completo, así la ventana o la columna pueden crecer hasta él
 
     std::string get_text() const            { return label_fn ? label_fn() : label_text; }
 
@@ -49,6 +53,7 @@ protected:
     ImVec4      label_color = ImVec4(0, 0, 0, 0);   // alfa 0 = color del estilo
     bool        label_wrap = false;
     bool        label_align = false;
+    bool        label_ellipsis = false;
 };
 
 /*

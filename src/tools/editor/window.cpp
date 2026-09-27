@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #ifdef _WIN32
@@ -31,7 +32,7 @@ editor_window::editor_window(const char* name, const char* title, unsigned optio
     name(name), title(title), options(options),
     open(true), minimized(false), focused(false), maximized(false), request_focus(false),
     default_pos(0.05f, 0.05f), default_size(0.30f, 0.30f),
-    min_size(ed_style.window_min_size), max_size(0, 0), content_size(0, 0),
+    min_size(ed_style.window_min_size), max_size(0, 0), content_size(0, 0), user_sized(false),
     rect{ ImVec2(0, 0), ImVec2(0, 0) },
     docked(false),
     float_size(0, 0), request_size(0, 0), request_pos(FLT_MAX, FLT_MAX), restore_pos(0, 0),
@@ -194,7 +195,7 @@ bool editor_window::can_maximize() const
         return false;
 
     // con el máximo según el contenido, no se sabe hasta haberlo medido
-    if (has_option(WND_MAX_CONTENT) && (content_size.x <= 0 || content_size.y <= 0))
+    if (has_option(WND_MAX_CONTENT) && !allows(WND_RESIZABLE) && (content_size.x <= 0 || content_size.y <= 0))
         return false;
 
     ImVec2 lo, hi;
@@ -319,10 +320,11 @@ void editor_window::set_max_size(float w, float h)
 ==================
 editor_window::get_size_limits
 
-Límites efectivos en px reales: código, luego contenido, luego on_size_limits()
+Límites efectivos en px reales: código, luego contenido, luego on_size_limits().
+Redimensionable, WND_MAX_CONTENT solo cuenta con fit (tamaño de ajuste)
 ==================
 */
-void editor_window::get_size_limits(ImVec2& min, ImVec2& max) const
+void editor_window::get_size_limits(ImVec2& min, ImVec2& max, bool fit) const
 {
 // por código
     min = ImVec2(ed_style.scaled(min_size.x), ed_style.scaled(min_size.y));
@@ -334,7 +336,7 @@ void editor_window::get_size_limits(ImVec2& min, ImVec2& max) const
     {
         if (has_option(WND_MIN_CONTENT))
             min = ImVec2(std::max(min.x, content_size.x), std::max(min.y, content_size.y));
-        if (has_option(WND_MAX_CONTENT))
+        if (has_option(WND_MAX_CONTENT) && (fit || !allows(WND_RESIZABLE)))
             max = ImVec2(std::min(max.x, content_size.x), std::min(max.y, content_size.y));
     }
 
@@ -342,6 +344,25 @@ void editor_window::get_size_limits(ImVec2& min, ImVec2& max) const
 
     // el máximo nunca por debajo del mínimo
     max = ImVec2(std::max(max.x, min.x), std::max(max.y, min.y));
+}
+
+/*
+==================
+editor_window::fit_to_content
+
+Vuelve a ajustarse a su contenido (WND_MAX_CONTENT): flotante, en el próximo
+frame; acoplada, los separadores de alrededor de su hoja
+==================
+*/
+void editor_window::fit_to_content()
+{
+    if (user_sized)
+    {
+        user_sized = false;
+        ImGui::MarkIniSettingsDirty();
+    }
+    if (editor_dock* dock = editor_dock::active())
+        dock->fit(this);
 }
 
 /*
@@ -507,26 +528,25 @@ ImGui la llama mientras se calcula el tamaño de la ventana
 */
 void editor_window::size_callback(ImGuiSizeCallbackData* data)
 {
-    static_cast<const editor_window*>(data->UserData)->snap_resize(data);
+    static_cast<editor_window*>(data->UserData)->snap_resize(data);
 }
 
 /*
 ==================
-editor_window::snap_resize
+Wnd_ResizeEdges
 
-Acopla los bordes que se están arrastrando al redimensionar. Se hace dentro
-del cálculo de tamaño de ImGui para que no haya un frame de retraso
+Qué bordes de w se están arrastrando con el ratón: edge[eje][0 = min, 1 = max].
+false si no se está redimensionando
 ==================
 */
-void editor_window::snap_resize(ImGuiSizeCallbackData* data) const
+static bool Wnd_ResizeEdges(ImGuiWindow* w, bool edge[2][2])
 {
     ImGuiContext& g = *GImGui;
-    ImGuiWindow* w = ImGui::FindWindowByName(imgui_id.c_str());
+    edge[0][0] = edge[0][1] = edge[1][0] = edge[1][1] = false;
     if (!w || !g.ActiveId)
-        return;
+        return false;
 
-// qué bordes se están arrastrando (esquinas: 0 inf-der, 1 inf-izq, 2 sup-izq, 3 sup-der)
-    bool edge[2][2] = {};   // [eje][0 = min, 1 = max]
+    // esquinas: 0 inf-der, 1 inf-izq, 2 sup-izq, 3 sup-der
     const ImGuiID id = g.ActiveId;
     if (id == ImGui::GetWindowResizeCornerID(w, 0))         { edge[0][1] = edge[1][1] = true; }
     else if (id == ImGui::GetWindowResizeCornerID(w, 1))    { edge[0][0] = edge[1][1] = true; }
@@ -537,6 +557,23 @@ void editor_window::snap_resize(ImGuiSizeCallbackData* data) const
     else if (id == ImGui::GetWindowResizeBorderID(w, ImGuiDir_Up))      edge[1][0] = true;
     else if (id == ImGui::GetWindowResizeBorderID(w, ImGuiDir_Down))    edge[1][1] = true;
     else
+        return false;
+    return true;
+}
+
+/*
+==================
+editor_window::snap_resize
+
+Acopla los bordes que se están arrastrando al redimensionar. Se hace dentro
+del cálculo de tamaño de ImGui para que no haya un frame de retraso
+==================
+*/
+void editor_window::snap_resize(ImGuiSizeCallbackData* data)
+{
+    ImGuiContext& g = *GImGui;
+    bool edge[2][2];    // [eje][0 = min, 1 = max]
+    if (!Wnd_ResizeEdges(ImGui::FindWindowByName(imgui_id.c_str()), edge))
         return;     // no es un redimensionado con el ratón
 
 // rectángulo propuesto: el borde opuesto al que se arrastra queda fijo
@@ -584,6 +621,13 @@ void editor_window::snap_resize(ImGuiSizeCallbackData* data) const
         }
         data->DesiredSize[axis] = r.max[axis] - r.min[axis];
     }
+
+    // redimensionada por el usuario: deja de ajustarse al contenido
+    if (!user_sized && (data->DesiredSize.x != data->CurrentSize.x || data->DesiredSize.y != data->CurrentSize.y))
+    {
+        user_sized = true;
+        ImGui::MarkIniSettingsDirty();
+    }
 }
 
 /*
@@ -616,12 +660,17 @@ void editor_window::draw(editor_dock* dock)
     const float title_height = ImGui::GetFrameHeight();     // igual que ImGuiWindow::TitleBarHeight
 
     ImGuiWindowFlags flags = build_flags();
+    ImGuiWindow* iw = ImGui::FindWindowByName(imgui_id.c_str());    // nullptr hasta el primer Begin()
 
     // límites de tamaño. Las acopladas miden exactamente lo que les da el
     // dock (que ya respeta su mínimo). Maximizada o minimizada, el tamaño lo
-    // decide su estado
+    // decide su estado. Flotante se ajusta al contenido hasta que el usuario
+    // la redimensiona; mientras arrastra un borde, solo los límites que no se
+    // pueden pasar
+    bool edge[2][2];
+    const bool resizing = Wnd_ResizeEdges(iw, edge);
     ImVec2 size_min, size_max;
-    get_size_limits(size_min, size_max);
+    get_size_limits(size_min, size_max, !user_sized && !resizing);
     if (docked || max_now || float_minimized)
     {
         size_min = ImVec2(0, 0);
@@ -658,7 +707,7 @@ void editor_window::draw(editor_dock* dock)
 
 // mover: ImGui ya aplicó el movimiento del ratón en NewFrame(), así que se
 // corrige la posición antes de Begin() para que no haya un frame de retraso
-        if (ImGuiWindow* w = ImGui::FindWindowByName(imgui_id.c_str()))
+        if (ImGuiWindow* w = iw)
         {
             const bool moving = g.MovingWindow && g.MovingWindow->RootWindow == w;
             const bool other_active = g.ActiveId != 0 && !moving;   // p. ej. redimensionando
@@ -950,7 +999,7 @@ void editor_window::begin_float_drag(const ImVec2& grab)
         fs = ImVec2(std::min(std::max(rect.width(), 1.0f), ws.width() * 0.4f),
                     std::min(std::max(rect.height(), 1.0f), ws.height() * 0.4f));
     ImVec2 lo, hi;
-    get_size_limits(lo, hi);
+    get_size_limits(lo, hi, !user_sized);
     fs = ImVec2(std::clamp(fs.x, lo.x, hi.x), std::clamp(fs.y, lo.y, hi.y));
 
     ImVec2 offset = grab;
@@ -1073,7 +1122,7 @@ static void Wnd_List_f(void)
 ==================
 Wnd_State_f
 
-minimizewindow / maximizewindow / restorewindow <ventana>
+minimizewindow / maximizewindow / restorewindow / fitwindow <ventana>
 ==================
 */
 static void Wnd_State_f(void)
@@ -1093,6 +1142,8 @@ static void Wnd_State_f(void)
 
     if (!strcasecmp(Cmd_Argv(0), "minimizewindow"))
         w->minimize();
+    else if (!strcasecmp(Cmd_Argv(0), "fitwindow"))
+        w->fit_to_content();
     else if (!strcasecmp(Cmd_Argv(0), "maximizewindow"))
         w->maximize();
     else
@@ -1114,4 +1165,42 @@ void editor_window::init()
     Cmd_AddCommand("minimizewindow", Wnd_State_f);
     Cmd_AddCommand("maximizewindow", Wnd_State_f);
     Cmd_AddCommand("restorewindow", Wnd_State_f);
+    Cmd_AddCommand("fitwindow", Wnd_State_f);
+
+    // editor.ini: qué ventanas ha redimensionado el usuario ([EditorWindow][nombre])
+    ImGuiSettingsHandler handler;
+    handler.TypeName = "EditorWindow";
+    handler.TypeHash = ImHashStr("EditorWindow");
+    handler.ReadOpenFn = settings_read_open;
+    handler.ReadLineFn = settings_read_line;
+    handler.WriteAllFn = settings_write_all;
+    ImGui::AddSettingsHandler(&handler);
+}
+
+/*
+==================
+editor_window::settings_read_open / settings_read_line / settings_write_all
+==================
+*/
+void* editor_window::settings_read_open(ImGuiContext*, ImGuiSettingsHandler*, const char* name)
+{
+    return find(name);
+}
+
+void editor_window::settings_read_line(ImGuiContext*, ImGuiSettingsHandler*, void* entry, const char* line)
+{
+    int v;
+    if (sscanf(line, "UserSized=%d", &v) == 1)
+        static_cast<editor_window*>(entry)->user_sized = (v != 0);
+}
+
+void editor_window::settings_write_all(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuffer* buf)
+{
+    for (const editor_window* w : windex)
+    {
+        if (!w->user_sized)
+            continue;
+        buf->appendf("[%s][%s]\n", handler->TypeName, w->name.c_str());
+        buf->append("UserSized=1\n\n");
+    }
 }

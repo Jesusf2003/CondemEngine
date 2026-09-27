@@ -59,6 +59,8 @@ struct dock_node
     std::unique_ptr<dock_node>  child[2];           // contenedor: 0 = izquierda/arriba, 1 = derecha/abajo
     bool                        vertical = false;   // hijos uno encima de otro (si no, lado a lado)
     float                       ratio = 0.5f;       // fracción del hijo 0
+    bool                        fit = true;         // ajustado al contenido (WND_MAX_CONTENT) hasta que
+                                                    // el usuario mueve el separador; doble clic lo restaura
 
     std::vector<editor_window*> tabs;               // hoja: ventanas en orden (abiertas u ocultas)
     editor_window*              active = nullptr;   // pestaña visible
@@ -103,6 +105,9 @@ public:
     void        activate(editor_window* window);
     // La hace pestaña visible de su hoja.
 
+    void        fit(const editor_window* window);
+    // Vuelve a ajustar al contenido los separadores de alrededor de su hoja.
+
     bool        content_rect(const editor_window* window, ImVec2& min, ImVec2& max) const;
     // Rectángulo que ocupa la ventana acoplada (bajo la barra de pestañas).
     // false si no está acoplada o no es la pestaña visible de una hoja visible.
@@ -139,6 +144,8 @@ private:
 
     // disposición
     ImVec2      min_size(const dock_node* node) const;
+    ImVec2      max_size(const dock_node* node, bool fit) const;
+    bool        split_range(const dock_node* container, float total, float& lo, float& hi) const;
     void        arrange(dock_node* node, const ImVec2& pos, const ImVec2& size);
     float       tabbar_height() const;
 

@@ -16,7 +16,7 @@ info_window
 ==================
 */
 info_window::info_window(const char* renderer) :
-    editor_window("info", ENGINE_NAME, WND_DEFAULT | WND_CLOSABLE | WND_MAX_CONTENT)
+    editor_window("info", ENGINE_NAME, WND_DEFAULT | WND_CLOSABLE | WND_MAX_CONTENT | WND_MIN_CONTENT)
 {
     set_default_rect(0.02f, 0.03f, 0.28f, 0.30f);
     // mínimo por código; el máximo es lo que ocupa su contenido (WND_MAX_CONTENT)

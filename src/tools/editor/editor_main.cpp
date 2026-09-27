@@ -230,21 +230,28 @@ static void VK_Shutdown(void)
 /*
 ================
 VK_FrameRender
+
+Devuelve false si no se pudo adquirir una imagen (swapchain caducado): no
+hay nada que presentar
 ================
 */
-static void VK_FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data)
+static bool VK_FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data)
 {
+    // image_acquired rota por frame; render_complete va por imagen del
+    // swapchain (FrameIndex, se sabe tras adquirirla): la presentación de esa
+    // imagen es lo único que lo espera, así que cuando se vuelve a adquirir la
+    // misma imagen ya está libre (VUID-vkQueueSubmit-pSignalSemaphores-00067)
     VkSemaphore image_acquired = wd->FrameSemaphores[wd->SemaphoreIndex].ImageAcquiredSemaphore;
-    VkSemaphore render_complete = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
 
     VkResult err = vkAcquireNextImageKHR(vk_device, wd->Swapchain, UINT64_MAX, image_acquired, VK_NULL_HANDLE, &wd->FrameIndex);
     if (err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_SUBOPTIMAL_KHR)
         vk_swapchain_rebuild = true;
     if (err == VK_ERROR_OUT_OF_DATE_KHR)
-        return;
+        return false;
     if (err != VK_SUBOPTIMAL_KHR)
         VK_Check(err);
 
+    VkSemaphore render_complete = wd->FrameSemaphores[wd->FrameIndex].RenderCompleteSemaphore;
     ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
     {
         err = vkWaitForFences(vk_device, 1, &fd->Fence, VK_TRUE, UINT64_MAX);
@@ -293,19 +300,21 @@ static void VK_FrameRender(ImGui_ImplVulkanH_Window* wd, ImDrawData* draw_data)
         err = vkQueueSubmit(vk_queue, 1, &info, fd->Fence);
         VK_Check(err);
     }
+    return true;
 }
 
 /*
 ================
 VK_FramePresent
+
+Presenta la imagen de VK_FrameRender. También con el swapchain subóptimo
+(vk_swapchain_rebuild): la imagen adquirida se tiene que presentar para que
+su semáforo quede libre antes de recrearlo
 ================
 */
 static void VK_FramePresent(ImGui_ImplVulkanH_Window* wd)
 {
-    if (vk_swapchain_rebuild)
-        return;
-
-    VkSemaphore render_complete = wd->FrameSemaphores[wd->SemaphoreIndex].RenderCompleteSemaphore;
+    VkSemaphore render_complete = wd->FrameSemaphores[wd->FrameIndex].RenderCompleteSemaphore;   // ver VK_FrameRender
     VkPresentInfoKHR info = {};
     info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     info.waitSemaphoreCount = 1;
@@ -448,6 +457,7 @@ int Editor_Main(void)
             ImGui_ImplVulkanH_CreateOrResizeWindow(vk_instance, vk_physical_device, vk_device, &vk_main_window,
                 vk_queue_family, vk_allocator, fb_width, fb_height, vk_min_image_count, 0);
             vk_main_window.FrameIndex = 0;
+            vk_main_window.SemaphoreIndex = 0;     // puede haber menos imágenes que antes
             vk_swapchain_rebuild = false;
         }
         if (VID_IsMinimized())
@@ -466,13 +476,14 @@ int Editor_Main(void)
         ImGui::Render();
         ImDrawData* draw_data = ImGui::GetDrawData();
         const bool minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f);
+        bool rendered = false;
         if (!minimized)
         {
             vk_main_window.ClearValue.color.float32[0] = ed_style.background.x;
             vk_main_window.ClearValue.color.float32[1] = ed_style.background.y;
             vk_main_window.ClearValue.color.float32[2] = ed_style.background.z;
             vk_main_window.ClearValue.color.float32[3] = ed_style.background.w;
-            VK_FrameRender(&vk_main_window, draw_data);
+            rendered = VK_FrameRender(&vk_main_window, draw_data);
         }
 
         // ventanas del sistema de las ventanas que están fuera de la principal
@@ -482,7 +493,7 @@ int Editor_Main(void)
             ImGui::RenderPlatformWindowsDefault();
         }
 
-        if (!minimized)
+        if (rendered)
             VK_FramePresent(&vk_main_window);
     }
 

@@ -2,6 +2,8 @@
 
 #include "tools/editor/ui/ui_layout.h"
 
+#include "imgui_internal.h"     // GImGui: rectángulo del grid al llenar el ancho
+
 #include <algorithm>
 
 /*
@@ -295,9 +297,15 @@ void ui_grid_pane::render()
         columns = std::max(columns, c.column + 1);
     columns = std::min(columns, 512);   // límite de las tablas de ImGui
 
+    const bool one_stretch = !grid_stretch && stretch_col >= 0 && stretch_col < columns;
+
     ImGuiTableFlags table_flags = ImGuiTableFlags_NoSavedSettings;
-    table_flags |= grid_stretch ? ImGuiTableFlags_SizingStretchProp
-                                : ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoHostExtendX;
+    if (grid_stretch)
+        table_flags |= ImGuiTableFlags_SizingStretchProp;
+    else if (one_stretch)
+        table_flags |= ImGuiTableFlags_SizingFixedFit;
+    else
+        table_flags |= ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoHostExtendX;
     if (grid_borders)
         table_flags |= ImGuiTableFlags_Borders;
 
@@ -310,7 +318,12 @@ void ui_grid_pane::render()
         for (int i = 0; i < columns; i++)
         {
             const float w = i < (int)widths.size() ? widths[i] : 0.0f;
-            ImGui::TableSetupColumn(nullptr, w > 0 ? ImGuiTableColumnFlags_WidthFixed : ImGuiTableColumnFlags_None, w);
+            ImGuiTableColumnFlags column_flags = ImGuiTableColumnFlags_None;
+            if (one_stretch && i == stretch_col)
+                column_flags = ImGuiTableColumnFlags_WidthStretch;
+            else if (w > 0)
+                column_flags = ImGuiTableColumnFlags_WidthFixed;
+            ImGui::TableSetupColumn(nullptr, column_flags, one_stretch && i == stretch_col ? 0.0f : w);
         }
 
         // copia: un evento puede cambiar las celdas mientras se dibujan
@@ -332,6 +345,18 @@ void ui_grid_pane::render()
             }
         }
         ImGui::EndTable();
+
+        // llenando el ancho: EndTable deja el ancho ideal en CursorMaxPos, pero
+        // su rectángulo (el que usa EndGroup para medir el grupo) llega al
+        // borde. Se recorta al ideal para que el grupo, y con él la ventana,
+        // no crezca con el ancho disponible
+        if (props.width < 0)
+        {
+            ImGuiContext& g = *GImGui;
+            const float ideal_x = g.CurrentWindow->DC.CursorMaxPos.x;
+            if (g.LastItemData.Rect.Max.x > ideal_x)
+                g.LastItemData.Rect.Max.x = std::max(ideal_x, g.LastItemData.Rect.Min.x);
+        }
     }
 
     if (gap)

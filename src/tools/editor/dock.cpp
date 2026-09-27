@@ -283,6 +283,20 @@ void editor_dock::activate(editor_window* window)
 
 /*
 ==================
+editor_dock::fit
+==================
+*/
+void editor_dock::fit(const editor_window* window)
+{
+    dock_node* leaf = node_of(window);
+    for (dock_node* n = leaf ? leaf->parent : nullptr; n; n = n->parent)
+        n->fit = true;
+    if (leaf)
+        Dock_MarkDirty();
+}
+
+/*
+==================
 editor_dock::content_rect
 ==================
 */
@@ -357,6 +371,92 @@ ImVec2 editor_dock::min_size(const dock_node* node) const
 
 /*
 ==================
+editor_dock::max_size
+
+Lo máximo que aprovecha un nodo (FLT_MAX = sin límite): una hoja, lo que
+permite la más grande de sus ventanas abiertas más la barra de pestañas; la
+central, sin límite, se queda con lo que sobra; un contenedor, la suma de
+sus hijos visibles.
+fit: con el tamaño de ajuste (WND_MAX_CONTENT aunque sea redimensionable);
+si no, solo los límites que no se pueden pasar (ver get_size_limits)
+==================
+*/
+ImVec2 editor_dock::max_size(const dock_node* node, bool fit) const
+{
+    if (!Dock_Shown(node))
+        return ImVec2(0, 0);
+
+    if (node->is_leaf())
+    {
+        if (node->central)
+            return ImVec2(FLT_MAX, FLT_MAX);
+
+        ImVec2 m(0, 0);
+        for (const editor_window* w : node->tabs)
+        {
+            if (!w->is_open())
+                continue;
+            ImVec2 lo, hi;
+            w->get_size_limits(lo, hi, fit);
+            m = ImVec2(std::max(m.x, hi.x), std::max(m.y, hi.y));
+        }
+        if (m.y < FLT_MAX)
+            m.y += tabbar_height();
+        return m;
+    }
+
+    const bool s0 = Dock_Shown(node->child[0].get());
+    const bool s1 = Dock_Shown(node->child[1].get());
+    const ImVec2 a = max_size(node->child[0].get(), fit);
+    const ImVec2 b = max_size(node->child[1].get(), fit);
+    if (!(s0 && s1))
+        return s0 ? a : b;
+
+    // la suma se queda en FLT_MAX si uno de los dos no tiene límite
+    const auto sum = [](float x, float y, float gap) { return (x >= FLT_MAX || y >= FLT_MAX) ? FLT_MAX : x + y + gap; };
+    const float gap = ed_style.scaled(ed_style.dock_splitter);
+    if (node->vertical)
+        return ImVec2(std::max(a.x, b.x), sum(a.y, b.y, gap));
+    return ImVec2(sum(a.x, b.x, gap), std::max(a.y, b.y));
+}
+
+/*
+==================
+editor_dock::split_range
+
+Tamaños válidos del primer hijo de un contenedor con total px para los dos:
+cada hijo entre su mínimo y su máximo (el de ajuste mientras container->fit).
+Los mínimos mandan. Si sobra sitio para los dos máximos, el sobrante se
+reparte según ratio (entre el máximo de uno y el del otro). Devuelve false
+si ni los mínimos caben
+==================
+*/
+bool editor_dock::split_range(const dock_node* container, float total, float& lo, float& hi) const
+{
+    const dock_node* c0 = container->child[0].get();
+    const dock_node* c1 = container->child[1].get();
+    const int axis = container->vertical ? 1 : 0;
+
+    const float m0 = min_size(c0)[axis];
+    const float m1 = min_size(c1)[axis];
+    if (m0 + m1 > total)
+        return false;
+
+    lo = m0;
+    hi = total - m1;
+
+    const float x0 = max_size(c0, container->fit)[axis];
+    const float x1 = max_size(c1, container->fit)[axis];
+    // ambos quedan dentro de [lo, hi]
+    const float a = std::max(lo, total - x1);
+    const float b = std::min(hi, x0);
+    lo = std::min(a, b);
+    hi = std::max(a, b);
+    return true;
+}
+
+/*
+==================
 editor_dock::arrange
 ==================
 */
@@ -394,14 +494,18 @@ void editor_dock::arrange(dock_node* node, const ImVec2& pos, const ImVec2& size
         const int axis = node->vertical ? 1 : 0;
         const float gap = ed_style.scaled(ed_style.dock_splitter);
         const float total = std::max(size[axis] - gap, 0.0f);
-        const float m0 = min_size(c0)[axis];
-        const float m1 = min_size(c1)[axis];
-
         float a = std::floor(total * node->ratio);
-        if (m0 + m1 <= total)
-            a = std::clamp(a, m0, total - m1);
-        else if (m0 + m1 > 0)
-            a = std::floor(total * m0 / (m0 + m1));     // no cabe: en proporción a los mínimos
+        float lo, hi;
+        if (split_range(node, total, lo, hi))
+            a = std::floor(std::clamp(a, lo, hi));
+        else
+        {
+            // no cabe: en proporción a los mínimos
+            const float m0 = min_size(c0)[axis];
+            const float m1 = min_size(c1)[axis];
+            if (m0 + m1 > 0)
+                a = std::floor(total * m0 / (m0 + m1));
+        }
 
         ImVec2 size0 = size, size1 = size, pos1 = pos;
         size0[axis] = a;
@@ -617,15 +721,27 @@ void editor_dock::draw_splitter(dock_node* container)
     if (ImGui::IsItemActivated())
         grab = mouse - min[axis];
 
-    if (active)
+    // doble clic: vuelve a ajustarse al contenido
+    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
     {
+        container->fit = true;
+        Dock_MarkDirty();
+    }
+    else if (active)
+    {
+        // al arrastrarlo deja de ajustarse: las ventanas redimensionables
+        // pueden crecer más que su contenido (hasta su máximo por código)
         const float gap = max[axis] - min[axis];
         const float total = (container->max[axis] - container->min[axis]) - gap;
-        const float m0 = min_size(c0)[axis];
-        const float m1 = min_size(c1)[axis];
-        if (total > 0 && m0 + m1 <= total)
+        const float current = c0->max[axis] - c0->min[axis];
+        const float wanted = mouse - grab - container->min[axis];
+        if (container->fit && std::fabs(wanted - current) >= 1.0f)
+            container->fit = false;
+
+        float lo, hi;
+        if (!container->fit && total > 0 && split_range(container, total, lo, hi))
         {
-            const float a = std::clamp(mouse - grab - container->min[axis], m0, total - m1);
+            const float a = std::clamp(wanted, lo, hi);
             container->ratio = a / total;
             Dock_MarkDirty();
         }
@@ -913,7 +1029,8 @@ void editor_dock::write_node(ImGuiTextBuffer* buf, const dock_node* node) const
 {
     if (!node->is_leaf())
     {
-        buf->appendf("%c%.4f(", node->vertical ? 'V' : 'H', node->ratio);
+        // '!' tras la fracción: separador colocado por el usuario (no ajustado)
+        buf->appendf("%c%.4f%s(", node->vertical ? 'V' : 'H', node->ratio, node->fit ? "" : "!");
         write_node(buf, node->child[0].get());
         buf->append(",");
         write_node(buf, node->child[1].get());
@@ -954,6 +1071,11 @@ std::unique_ptr<dock_node> editor_dock::parse_node(const char*& p, dock_node* pa
             return nullptr;
         node->ratio = std::clamp(node->ratio, 0.02f, 0.98f);
         p = end;
+        if (*p == '!')
+        {
+            node->fit = false;
+            p++;
+        }
 
         if (*p++ != '(')
             return nullptr;
